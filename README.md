@@ -8,9 +8,7 @@ a visual seat map with real-time status, held seats auto-release on abandonment,
 shows have a waitlist with automatic seat offers on cancellation, and every confirmed
 booking gets an emailed QR code ticket.
 
-Backend: Flask + SQLAlchemy + PostgreSQL. Frontend: plain HTML/CSS/JS, served by the same
-Flask app. No React/Vite, no Redis, no microservices — see [Architecture &
-trade-offs](#architecture--trade-offs) for why.
+Backend: Flask + SQLAlchemy + PostgreSQL. Frontend: HTML/CSS/JS.
 
 ---
 
