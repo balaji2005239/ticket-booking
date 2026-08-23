@@ -472,6 +472,10 @@ Running total: 250/250 backend smoke-test checks passing across all seven suites
      forces a conscious choice, same reasoning as `BREVO_API_KEY`), set to
      `ticketbooking565@gmail.com` in the dashboard, redeployed, retested live — OTP
      email confirmed reaching a real inbox this time.
+  **Fully closed**: retested both the direct API call and the actual frontend UI flow
+  (register/verify-email pages) against a real inbox (`balajidrivebackup@gmail.com`)
+  — both confirmed working. Real email delivery, end to end, through the deployed app,
+  is done.
   **Lesson for anyone deploying this fresh**: Brevo (and most transactional-email
   providers) silently reject sends from an unverified sender *after* accepting the API
   call — `send_email()` returning `True` does not mean the email arrived, only that
