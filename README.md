@@ -1,13 +1,13 @@
 # Ticket Booking System
 
+### 🔗 Live site: **https://ticket-booking-api-1sps.onrender.com**
+*(Render free tier — the instance sleeps after 15 minutes idle; the first request after
+that takes ~30-60s to wake it up. Free Postgres also expires 30 days after creation.)*
+
 A ticket booking platform for movies/concerts: customers browse events, book seats from
 a visual seat map with real-time status, held seats auto-release on abandonment, sold-out
 shows have a waitlist with automatic seat offers on cancellation, and every confirmed
 booking gets an emailed QR code ticket.
-
-**Live demo**: https://ticket-booking-api-1sps.onrender.com
-*(Render free tier — the instance sleeps after 15 minutes idle; the first request after
-that takes ~30-60s to wake it up. Free Postgres also expires 30 days after creation.)*
 
 Backend: Flask + SQLAlchemy + PostgreSQL. Frontend: plain HTML/CSS/JS, served by the same
 Flask app. No React/Vite, no Redis, no microservices — see [Architecture &
@@ -434,15 +434,25 @@ checkout resolves the same way any other concurrent access does).
 checkout request (network retry, double-click) with the same `hold_key` finds the
 existing booking and returns it rather than erroring or double-booking.
 
-**Verified, not just implemented**: this was tested against real PostgreSQL with a
-genuine concurrent race — two threads released at the exact same instant
-(`threading.Barrier`) each firing a real HTTP `POST /hold` for the identical seat, from
-two different customer accounts, against the live deployed app. Result: exactly one
-`201`, one `409`, and the database state consistent with the winner. Run twice, with a
-different winner each time (confirming it's a genuine race, not a fixed outcome). Every
-other test in this project's history ran against SQLite, which can't do row-level
-locking at all — this is the one guarantee that specifically needed real Postgres to
-prove.
+**Verified, not just implemented**: tested against real PostgreSQL with genuine
+concurrent races — real customer accounts, real HTTP `POST /hold` requests, all
+released at the exact same instant via `threading.Barrier` (not sequential, not a
+direct DB test), against the live deployed app. Every other test in this project's
+history ran against SQLite, which can't do row-level locking at all — this guarantee
+specifically needed real Postgres to prove. Results at increasing contention, same
+seat, every time:
+
+| Concurrent requests for the *same* seat | Result |
+|---|---|
+| 2 | 1× `201`, 1× `409` — run twice, different winner each time (confirms it's a genuine race, not a fixed outcome) |
+| 8 | 1× `201`, 7× `409`, all in ~1.1s wall time |
+| 12 | 1× `201`, 11× `409`, all in ~1.5s wall time |
+
+Every run: exactly one winner, zero double-bookings, zero errors, final database state
+consistent with the winner. As a control, 12 customers requesting 12 **different** seats
+at the same instant all succeeded (`12/12`, ~1.4s total) — confirming the serialization
+above is genuine lock contention on a shared row, not just the app being slow: unrelated
+seats don't block each other at all.
 
 ---
 
@@ -475,12 +485,23 @@ next person with a time-limited emailed link; unclaimed in time → offer the ne
    `offer_next_in_line()` again for that category — so "offered to the next person"
    happens within the *same* sweep, not the next 30-second cycle.
 
-**Verified, not just implemented**: the full chain — sell out → two customers join in
-order → cancel → first customer offered and claims it → cancel again → second customer
-offered → their offer forced into the past → **the live scheduler thread itself**
-(not a direct function call) auto-expired it within ~15 seconds and freed the seat —
-was run against the live deployed app and real Postgres, via real HTTP requests, not
-direct database manipulation.
+**Verified, not just implemented**: two live runs against the actual deployed app and
+real Postgres, both via real HTTP requests (not direct database manipulation), both
+using **the live scheduler thread itself** to catch each expiry (not a direct function
+call to `expire_stale_offers()`):
+
+1. **The claim path**: sell out → two customers join in order → cancel → first
+   customer offered and claims it → cancel again → second customer offered → their
+   offer forced into the past → the live scheduler auto-expired it within ~15 seconds
+   and freed the seat.
+2. **Queue depth + back-to-back cascades**: 4 customers (W1-W4) waiting in order for
+   one seat. Cancel → W1 offered, W2/W3/W4 untouched. Force W1's offer into the past →
+   live scheduler expires it *and* offers W2 in the same sweep — W3/W4 still untouched
+   (FIFO order preserved, nobody skipped ahead). Force W2's offer into the past too →
+   a **second** cascade, live scheduler expires it and offers W3 — W4 still untouched.
+   W3 claims successfully. W4 never received an offer at any point in this chain,
+   because only one seat was ever freed. 23/23 checks passed, including the FIFO-order
+   assertions after each step.
 
 **One accepted trade-off** (documented, not an oversight): picking "the next waiting
 entry" isn't perfectly linearizable if two cancellations for the *same* category race
@@ -548,13 +569,19 @@ browse, seat hold/checkout, waitlist, QR/email, booking history, OTP verificatio
 role-based access control, ownership isolation, validation, idempotency, cascade
 behavior, and the full seat-hold/waitlist state machines. Live-only verification
 (can't be done against SQLite): the actual `SELECT ... FOR UPDATE` concurrency
-guarantee under a genuine simultaneous request race, the live APScheduler thread
-actually firing on its own schedule (not just the swept function being correct), and
-real end-to-end email delivery.
+guarantee under genuine simultaneous request races at multiple scales (2, 8, and 12
+concurrent requests for the same seat — see
+[Seat hold & concurrency logic](#seat-hold--concurrency-logic)), the live APScheduler
+thread actually firing on its own schedule (not just the swept function being correct)
+across multiple sweep cycles in a row (see
+[Waitlist & time-limited offer logic](#waitlist--time-limited-offer-logic)), and real
+end-to-end email delivery.
 
-See `PROJECT_BRIEF.md` for the full build-and-debugging history, including two real
-bugs that were caught by this testing (not by inspection): an idempotent-replay gate
-ordering bug in `claim_offer()`, and the `app.logger` level issue mentioned above.
+See `PROJECT_BRIEF.md` for the full build-and-debugging history, including real bugs
+caught by this testing (not by inspection): an idempotent-replay gate ordering bug in
+`claim_offer()`, the `app.logger` level issue mentioned above, and a misconfigured
+`EMAIL_FROM_ADDRESS` (unverified sender) that silently killed every app-sent email
+until Brevo's own delivery logs — not this app's logs — revealed the reason.
 
 ---
 
