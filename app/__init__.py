@@ -1,3 +1,4 @@
+import logging
 import os
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -14,6 +15,14 @@ FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 def create_app(config_class=Config):
     app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
     app.config.from_object(config_class)
+
+    # Flask's app.logger defaults to WARNING in production (no debug mode) —
+    # discovered the hard way: current_app.logger.info(...) calls throughout
+    # this codebase (email send attempts, etc.) were being silently dropped
+    # by the logging module itself, never reaching Render's log stream, even
+    # though a handler was present. Without this, "check the logs" is a dead
+    # end for anything below WARNING.
+    app.logger.setLevel(logging.INFO)
 
     CORS(app, resources={r"/api/*": {"origins": "*"}})
     db.init_app(app)
