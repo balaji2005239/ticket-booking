@@ -422,11 +422,63 @@ Running total: 250/250 backend smoke-test checks passing across all seven suites
      itself — not just the `curl` test from step 4 — sends real mail post-redeploy.
   **Full regression (250/250) reran clean after the rewrite** — the smoke tests
   monkeypatch `send_email()` itself, so they're implementation-agnostic and didn't need
-  changes. **Caveat**: the `curl` test in step 4 was explicitly confirmed received; the
-  step-5 live-app-triggered booking email was not explicitly re-confirmed in the
-  inbox afterward (the conversation moved on to the OTP feature below) — same code
-  path, same API call, so very likely fine, but worth a quick manual check rather than
-  taking that as fully closed.
+  changes. That "worth a quick manual check rather than taking this as fully closed"
+  caveat turned out to matter — see the next entry, which picks up exactly there.
+
+- **The step-5 caveat above was right to flag: the live-app-triggered emails were NOT
+  actually arriving**, and it took three more rounds of debugging (spread across the
+  waitlist-email and OTP-email work below) to find the real cause. Chronology:
+  6. Testing the waitlist "seat available" offer email specifically (a different
+     function, `_send_offer_email()`, from the booking-confirmation one, though both
+     call the same `send_email()`): direct `curl` reproductions of the exact payload
+     always succeeded and arrived; the same email triggered *through the app* never
+     arrived, with no error visible anywhere. Two false leads chased first:
+     - A stale deploy: Render had silently reverted to an older commit (predating a
+       later push) — likely a build-ordering race from pushing several commits in
+       quick succession. Fixed with a manual "Deploy latest commit" click, and from
+       then on every deploy was verified via an observable behavior change (e.g.
+       whether `register()` returned a token) rather than trusted blindly, since a
+       plain health check can't distinguish which commit is actually live.
+     - `app.logger` was silently dropping `.info()`-level logs: Flask's logger
+       defaults to `WARNING` outside debug mode, so diagnostic logging added to
+       `_send_offer_email()`/`_send_otp()` (see below) wasn't reaching Render's log
+       stream at all — searching for it came back "no matching logs", which was
+       itself the clue. Fixed with `app.logger.setLevel(logging.INFO)` in
+       `create_app()` (`app/__init__.py`) — an app-wide fix, not just for these two
+       call sites.
+  7. Both `_send_offer_email()` and `_send_otp()` (`app/routes/auth.py`) were rewritten
+     to match `ticket_service.send_booking_confirmation_email()`'s existing pattern —
+     explicit logging on entry and on the `send_email()` result, wrapped in try/except.
+     Neither had had this before, so a bug or failure in either was structurally
+     invisible: no exception reached the caller (both callers have no try/except of
+     their own either, so a real raise would have surfaced as a 500 on the triggering
+     request — which never happened, meaning the code really was completing without
+     error) and nothing was logged regardless of outcome.
+  8. With logging actually visible, the real answer showed up immediately:
+     `send_email()` was returning `True` (Brevo's API call itself succeeding, 2xx,
+     real `messageId`) but the email still never arrived. Checking Brevo's own
+     **Transactional -> Email Activity** logs (not visible from our side at all) gave
+     the actual reason: *"Sending has been rejected because the sender you used
+     noreply@yourticketapp.com is not valid. Validate your sender or authenticate your
+     domain."* — `EMAIL_FROM_ADDRESS` on the live deploy was still the
+     `.env.example`/`render.yaml` placeholder value, never the actual Brevo-verified
+     sender (`ticketbooking565@gmail.com`). Every manual `curl` test throughout this
+     whole investigation had used the correct verified sender explicitly (hardcoded in
+     the test command); every email the *app itself* sent had been using the wrong
+     one. This is why "does Brevo's API work" kept checking out while "does the app's
+     email work" kept failing — different sender, same everything else.
+  9. Fix: `EMAIL_FROM_ADDRESS` changed from a `value:` placeholder to `sync: false` in
+     `render.yaml` (so a fresh deploy can't silently inherit an invalid sender — it now
+     forces a conscious choice, same reasoning as `BREVO_API_KEY`), set to
+     `ticketbooking565@gmail.com` in the dashboard, redeployed, retested live — OTP
+     email confirmed reaching a real inbox this time.
+  **Lesson for anyone deploying this fresh**: Brevo (and most transactional-email
+  providers) silently reject sends from an unverified sender *after* accepting the API
+  call — `send_email()` returning `True` does not mean the email arrived, only that
+  Brevo's API accepted the request structurally. The provider's own delivery/activity
+  logs are the only authoritative source for what happened next; this app has no way
+  to detect or surface that failure itself (would need Brevo's async delivery-status
+  API or webhooks, out of scope here).
 
 ## Post-deployment addition: email OTP verification (not in the original brief)
 A feature request that came after the app was fully built, tested, and deployed —

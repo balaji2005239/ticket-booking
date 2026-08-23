@@ -62,8 +62,19 @@ services:
       # SMTP tab — that's a different credential and won't work here).
       - key: BREVO_API_KEY
         sync: false
+      # MUST be an address verified as a sender in Brevo (Senders, Domains &
+      # Dedicated IPs -> Senders) — Brevo silently rejects the send otherwise
+      # (send_email() still returns True; the API call itself succeeds, it's
+      # the actual delivery that's rejected downstream — "Sending has been
+      # rejected because the sender you used ... is not valid"). Learned this
+      # the hard way: this was left as the noreply@yourticketapp.com
+      # placeholder from .env.example, which was never a real Brevo sender,
+      # so every email the *app* sent silently failed for a while even
+      # though manual curl tests using a real verified sender worked fine.
+      # sync:false (not a `value:` default) specifically so a fresh deploy
+      # can't inherit an unverified placeholder without a conscious choice.
       - key: EMAIL_FROM_ADDRESS
-        value: noreply@yourticketapp.com
+        sync: false
       - key: EMAIL_FROM_NAME
         value: Ticket Booking
 
