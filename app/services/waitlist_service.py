@@ -231,22 +231,43 @@ def expire_stale_offers():
 
 
 def _send_offer_email(entry, seat_row):
-    """Best-effort — send_email() already fails soft if SMTP isn't configured."""
-    customer = User.query.get(entry.customer_id)
-    event = Event.query.get(entry.event_id)
-    if not customer or not event:
-        return
+    """
+    Best-effort — send_email() already fails soft, but this function used to
+    have no error handling of its own around the lookups/formatting before
+    that call, so a bug there would fail *silently*: no exception reaches the
+    caller (offer_next_in_line() has no try/except either, so a raise here
+    would actually propagate all the way to a 500 on the cancel/claim
+    request — which never happened in testing, meaning this path was
+    completing without raising) and nothing gets logged either way. Explicit
+    logging + a try/except now, matching ticket_service.py's pattern, so
+    "did we even try to send this" is never ambiguous again.
+    """
+    try:
+        customer = User.query.get(entry.customer_id)
+        event = Event.query.get(entry.event_id)
+        if not customer or not event:
+            current_app.logger.error(
+                "waitlist offer email skipped: customer=%s event=%s not found (entry id=%s)",
+                entry.customer_id, entry.event_id, entry.id,
+            )
+            return False
 
-    base = current_app.config["FRONTEND_BASE_URL"].rstrip("/")
-    link = f"{base}/claim-offer.html?token={entry.offer_token}"
-    minutes = max(current_app.config["OFFER_TTL_SECONDS"] // 60, 1)
-    seat_label = _seat_label(seat_row.seat) or "a seat"
+        base = current_app.config["FRONTEND_BASE_URL"].rstrip("/")
+        link = f"{base}/claim-offer.html?token={entry.offer_token}"
+        minutes = max(current_app.config["OFFER_TTL_SECONDS"] // 60, 1)
+        seat_label = _seat_label(seat_row.seat) or "a seat"
 
-    html = (
-        f"<p>Hi {customer.name},</p>"
-        f"<p>A seat just opened up for <strong>{event.title}</strong> ({seat_label}) "
-        f"and you're next on the waitlist.</p>"
-        f'<p><a href="{link}">Claim it here</a> within {minutes} minutes, or it goes '
-        f"to the next person in line.</p>"
-    )
-    send_email(customer.email, f"Seat available: {event.title}", html)
+        html = (
+            f"<p>Hi {customer.name},</p>"
+            f"<p>A seat just opened up for <strong>{event.title}</strong> ({seat_label}) "
+            f"and you're next on the waitlist.</p>"
+            f'<p><a href="{link}">Claim it here</a> within {minutes} minutes, or it goes '
+            f"to the next person in line.</p>"
+        )
+        current_app.logger.info("Sending waitlist offer email to %s (entry id=%s)", customer.email, entry.id)
+        result = send_email(customer.email, f"Seat available: {event.title}", html)
+        current_app.logger.info("Waitlist offer email to %s: send_email() returned %s", customer.email, result)
+        return result
+    except Exception as e:  # noqa: BLE001 — never let an email bug break the offer flow
+        current_app.logger.error("waitlist offer email failed (entry id=%s): %s", entry.id, e)
+        return False
