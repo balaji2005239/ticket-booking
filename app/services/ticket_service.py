@@ -47,7 +47,7 @@ def send_booking_confirmation_email(booking):
           <tr><td><strong>Venue</strong></td><td>{venue_name}</td></tr>
           <tr><td><strong>When</strong></td><td>{starts_at}</td></tr>
           <tr><td><strong>Seats</strong></td><td>{seats}</td></tr>
-          <tr><td><strong>Total</strong></td><td>{float(booking.total):.2f}</td></tr>
+          <tr><td><strong>Total</strong></td><td>&#8377;{float(booking.total):.2f}</td></tr>
           <tr><td><strong>Booking Ref</strong></td><td>{booking.ref}</td></tr>
         </table>
         <p>Your QR code ticket is attached — show it at entry.</p>

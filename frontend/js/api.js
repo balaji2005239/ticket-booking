@@ -121,5 +121,5 @@ function formatDateTime(iso) {
 
 function formatMoney(n) {
   if (n === null || n === undefined) return '—';
-  return `$${Number(n).toFixed(2)}`;
+  return `₹${Number(n).toFixed(2)}`;
 }
