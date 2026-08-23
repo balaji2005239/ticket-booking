@@ -41,7 +41,13 @@ services:
       # update this value in the dashboard after first deploy; it's only
       # used to build the waitlist "claim your seat" email link.
       - key: FRONTEND_BASE_URL
-        value: https://ticket-booking-api.onrender.com
+        # Actual assigned URL (the plain "ticket-booking-api" name was taken,
+        # Render suffixed it) — was wrong here until this fix; if you ever
+        # recreate this service under a different name, update this too, and
+        # also update it directly in the existing service's dashboard (a
+        # render.yaml change alone doesn't override an already-set env var
+        # on a service that already exists).
+        value: https://ticket-booking-api-1sps.onrender.com
       # SMTP is optional — without it, send_email() fails soft (logs and
       # skips) so booking/waitlist flows still work, just without real
       # emails going out. Fill these in via the Render dashboard
