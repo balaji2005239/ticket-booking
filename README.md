@@ -1,8 +1,7 @@
 # Ticket Booking System
 
 ### 🔗 Live site: **https://ticket-booking-api-1sps.onrender.com**
-*(Render free tier — the instance sleeps after 15 minutes idle; the first request after
-that takes ~30-60s to wake it up. Free Postgres also expires 30 days after creation.)*
+
 
 A ticket booking platform for movies/concerts: customers browse events, book seats from
 a visual seat map with real-time status, held seats auto-release on abandonment, sold-out
