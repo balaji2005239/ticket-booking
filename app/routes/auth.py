@@ -15,9 +15,16 @@ def _issue_token(user):
 
 
 def _send_otp(user):
-    """Generate a fresh OTP, persist it, and email it. Fails soft on the
-    email side (send_email() already does) — the code is still valid and
-    can be requested again via /resend-otp if the email doesn't arrive."""
+    """
+    Generate a fresh OTP, persist it, and email it. Fails soft on the email
+    side (send_email() already does) — the code is still valid and can be
+    requested again via /resend-otp if the email doesn't arrive. Explicit
+    logging + a try/except around the send (matching the same fix just made
+    to waitlist_service._send_offer_email(), which had this identical gap):
+    without it, a failure here is completely invisible — no exception
+    reaches the caller, nothing gets logged, so "did we even try to send
+    this" was unanswerable from the logs alone.
+    """
     code = generate_otp()
     user.otp_code = code
     user.otp_expires_at = otp_expiry(current_app.config["OTP_TTL_SECONDS"])
@@ -31,7 +38,14 @@ def _send_otp(user):
         f"<p>Enter it within {minutes} minutes to verify your account. If you didn't "
         f"request this, you can ignore this email.</p>"
     )
-    send_email(user.email, "Verify your email — Ticket Booking", html)
+    try:
+        current_app.logger.info("Sending OTP email to %s (user id=%s)", user.email, user.id)
+        result = send_email(user.email, "Verify your email — Ticket Booking", html)
+        current_app.logger.info("OTP email to %s: send_email() returned %s", user.email, result)
+        return result
+    except Exception as e:  # noqa: BLE001 — never let an email bug break registration
+        current_app.logger.error("OTP email failed (user id=%s): %s", user.id, e)
+        return False
 
 
 @auth_bp.post("/register")
