@@ -38,7 +38,7 @@ and every confirmed booking produces an email with a QR code ticket.
 3. Hosted application URL (Vercel, Render, Railway, or similar)
 4. System design write-up (800 words max) — seat hold/TTL, concurrency prevention,
    waitlist auto-assignment flow, time-limited offer handling
-   → **already drafted, see `system_design_writeup.docx`, exactly 800 words**
+   → **already drafted, see `system design writeup.docx`, within the 800-word max**
 
 ## Evaluation Focus
 - Seat hold TTL and auto-release mechanism
