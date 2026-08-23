@@ -26,11 +26,12 @@ class Config:
     OFFER_TTL_SECONDS = int(os.getenv("OFFER_TTL_SECONDS", 600))
     SCHEDULER_INTERVAL_SECONDS = int(os.getenv("SCHEDULER_INTERVAL_SECONDS", 30))
 
-    SMTP_HOST = os.getenv("SMTP_HOST", "")
-    SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-    SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
-    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-    SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "noreply@example.com")
-    SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Ticket Booking")
+    # Email via Brevo's HTTP API (see app/utils/email.py's docstring for why
+    # this isn't raw SMTP — Render blocks outbound SMTP traffic entirely).
+    # BREVO_API_KEY comes from Brevo's dashboard under SMTP & API -> API Keys
+    # (a different credential from an SMTP key, despite the similar naming).
+    BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+    EMAIL_FROM_ADDRESS = os.getenv("EMAIL_FROM_ADDRESS", "noreply@example.com")
+    EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Ticket Booking")
 
     FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:5500")

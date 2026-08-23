@@ -58,7 +58,15 @@ and every confirmed booking produces an email with a QR code ticket.
 
 ## Architecture Decisions Made
 - **Backend:** Flask + SQLAlchemy, Flask-JWT-Extended (auth), APScheduler (TTL expiry),
-  `qrcode` (QR generation), smtplib (email — no extra email SDK)
+  `qrcode` (QR generation), email via Brevo's HTTP API using plain `requests` — **changed
+  from the original decision of smtplib** after deployment: Render blocks outbound SMTP
+  traffic entirely (confirmed by testing — valid SMTP credentials authenticate
+  successfully from an unrestricted network, then time out on every port when the exact
+  same code runs on Render). An HTTP POST on port 443 is immune to that. Still "no extra
+  email SDK" in spirit — bare `requests` against Brevo's REST endpoint, not a vendor SDK
+  — but the payload shape is now Brevo-specific rather than protocol-agnostic like SMTP
+  was. See `app/utils/email.py`'s docstring and the deployment log at the bottom of this
+  file for the full story.
 - **Database:** **PostgreSQL only** — no Redis. Seat holds and waitlist offers live as rows
   with `*_expires_at` timestamps; APScheduler sweeps every ~30s to expire them.
   Chosen for simpler hosting/single dependency over Redis-based TTL (which was considered
@@ -129,7 +137,10 @@ and every confirmed booking produces an email with a QR code ticket.
   available/held/booked status, no PII). — **tested and passing**, 28/28 smoke-test checks.
 - `app/utils/auth.py` — `role_required(*roles)` decorator, `current_user()` helper
 - `app/utils/dates.py` — `parse_iso_datetime()` / `parse_date()`, shared by events.py and browse.py
-- `app/utils/email.py` — SMTP sender stub (HTML + attachments), fails soft
+- `app/utils/email.py` — email sender (HTML + attachments), fails soft. Originally an
+  SMTP stub; rewritten post-deployment to use Brevo's HTTP API instead — see the
+  "Architecture Decisions Made" section above and the deployment log at the bottom of
+  this file.
 - `app/scheduler.py` — APScheduler wired to call `release_expired_holds()` and
   `expire_stale_offers()` every `SCHEDULER_INTERVAL_SECONDS` (default 30s). These two
   functions **do not exist yet** — scheduler lazily imports them from
@@ -380,11 +391,39 @@ Running total: 250/250 backend smoke-test checks passing across all seven suites
   service sleeps after 15 min idle (~1 min cold start) and gets 750 instance-hours/month
   workspace-wide. Fine for a graded demo; would need a paid Postgres plan for anything
   longer-lived.
-- **SMTP not yet configured** — `SMTP_HOST` etc. are placeholders in `render.yaml`
-  (`sync: false`, filled in via Render's dashboard, not committed). Booking/waitlist
-  flows work either way (`send_email()` fails soft), but real email delivery from the
-  live deployment hasn't been exercised — only the code path, locally, with a
-  monkeypatched capture (see step 6's notes above).
+- **Real email delivery: got it working, but it took discovering a platform-level
+  problem along the way.** Chronology, since it's a useful debugging trail:
+  1. Set up a free Brevo account, verified a sender, generated an SMTP key, put
+     `SMTP_HOST`/`SMTP_USERNAME`/`SMTP_PASSWORD` etc. in Render's dashboard (the
+     `sync: false` fields in the SMTP-era `render.yaml`). Triggered a real booking on
+     the live app — no email arrived. Render's logs: `Email send failed ...: timed out`.
+  2. First hypothesis: wrong SMTP login (used the Brevo account email; Brevo's actual
+     SMTP login is a generated `xxxxx@smtp-brevo.com` identifier, found under SMTP &
+     API -> SMTP). Fixed it, redeployed, tested again — same timeout.
+  3. Tested the corrected credentials directly from an unrestricted local machine (raw
+     `smtplib`, ports 587/2525/465): **all three connected and authenticated
+     successfully**, no timeout at all. That ruled out the credentials and pointed
+     squarely at Render's network specifically being unable to reach
+     `smtp-relay.brevo.com` — cloud/PaaS platforms blocking outbound SMTP to fight spam
+     abuse is a common practice, and this behavior (TCP connection never completing,
+     not an active rejection) is exactly its signature.
+  4. **Fix: stopped using SMTP entirely.** Rewrote `app/utils/email.py` to call Brevo's
+     HTTP REST API (`POST https://api.brevo.com/v3/smtp/email`, plain `requests`, port
+     443) instead of `smtplib`. Verified directly with `curl` before touching
+     Render — Brevo accepted the request (`201`, returned a `messageId`) and the test
+     email actually arrived. Reworked config accordingly: `BREVO_API_KEY` (Brevo
+     dashboard -> SMTP & API -> **API Keys** tab — a third, different credential from
+     both the SMTP login and the SMTP key) replaces the old `SMTP_*` vars;
+     `EMAIL_FROM_ADDRESS`/`EMAIL_FROM_NAME` replace `SMTP_FROM_EMAIL`/`SMTP_FROM_NAME`.
+     `requests` added to `requirements.txt`. This is a real, deliberate reversal of the
+     original "smtplib, no extra email SDK" architecture decision — recorded there too.
+  5. Next: redeploy with the new code + `BREVO_API_KEY` on Render, then trigger one more
+     real booking on the live app to confirm delivery end-to-end there too (the `curl`
+     test in step 4 confirmed Brevo's API + the request shape work; it did not yet
+     confirm the deployed app itself, post-redeploy, does).
+  **Full regression (250/250) reran clean after the rewrite** — the smoke tests
+  monkeypatch `send_email()` itself, so they're implementation-agnostic and didn't need
+  changes. **Live-deployment email delivery: pending confirmation as of this writing.**
 
 ## Reference Material Used (concepts only, not architecture)
 - Medium: "Online Movie Ticket Booking Platform - System Design (e.g. BookMyShow)" by

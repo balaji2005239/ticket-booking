@@ -48,22 +48,21 @@ services:
         # render.yaml change alone doesn't override an already-set env var
         # on a service that already exists).
         value: https://ticket-booking-api-1sps.onrender.com
-      # SMTP is optional — without it, send_email() fails soft (logs and
-      # skips) so booking/waitlist flows still work, just without real
-      # emails going out. Fill these in via the Render dashboard
-      # (Environment tab) if you want real delivery; sync:false keeps them
-      # out of this file / the repo.
-      - key: SMTP_HOST
+      # Email is optional — without BREVO_API_KEY, send_email() fails soft
+      # (logs and skips) so booking/waitlist flows still work, just without
+      # real emails going out. Fill this in via the Render dashboard
+      # (Environment tab); sync:false keeps it out of this file / the repo.
+      # NOTE: this is genuinely Brevo's HTTP API, not SMTP — Render blocks
+      # outbound SMTP entirely (confirmed by testing: valid SMTP credentials
+      # authenticate fine from an unrestricted network, then time out on
+      # every port when run on Render). See app/utils/email.py's docstring.
+      # Get this from Brevo's dashboard: SMTP & API -> API Keys (NOT the
+      # SMTP tab — that's a different credential and won't work here).
+      - key: BREVO_API_KEY
         sync: false
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USERNAME
-        sync: false
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: SMTP_FROM_EMAIL
+      - key: EMAIL_FROM_ADDRESS
         value: noreply@yourticketapp.com
-      - key: SMTP_FROM_NAME
+      - key: EMAIL_FROM_NAME
         value: Ticket Booking
 
 databases:
