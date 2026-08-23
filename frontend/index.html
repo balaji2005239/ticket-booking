@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Browse Events — Ticket Booking</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="nav"></div>
+  <main>
+    <h1>Browse Events</h1>
+    <p class="subtitle">Movies and concerts — pick one to see the seat map.</p>
+
+    <div class="card">
+      <div class="form-row">
+        <div>
+          <label for="fType">Type</label>
+          <select id="fType">
+            <option value="">All</option>
+            <option value="movie">Movie</option>
+            <option value="concert">Concert</option>
+          </select>
+        </div>
+        <div>
+          <label for="fQ">Search title</label>
+          <input type="text" id="fQ" placeholder="e.g. Inception">
+        </div>
+        <div>
+          <label for="fDate">Date</label>
+          <input type="date" id="fDate">
+        </div>
+        <div style="flex: 0 0 auto;">
+          <button id="applyBtn" style="margin-top: 21px;">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="alertBox"></div>
+    <div id="eventList"></div>
+    <p id="emptyMsg" class="muted hidden">No events match those filters.</p>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/nav.js"></script>
+  <script>
+    async function loadEvents() {
+      clearAlert();
+      const params = new URLSearchParams();
+      const type = document.getElementById('fType').value;
+      const q = document.getElementById('fQ').value.trim();
+      const date = document.getElementById('fDate').value;
+      if (type) params.set('event_type', type);
+      if (q) params.set('q', q);
+      if (date) params.set('date', date);
+
+      const list = document.getElementById('eventList');
+      const emptyMsg = document.getElementById('emptyMsg');
+      list.innerHTML = '<p class="muted">Loading&hellip;</p>';
+      emptyMsg.classList.add('hidden');
+
+      try {
+        const data = await api(`/api/events?${params.toString()}`, { auth: false });
+        list.innerHTML = '';
+        if (data.events.length === 0) {
+          emptyMsg.classList.remove('hidden');
+          return;
+        }
+        for (const ev of data.events) {
+          const card = document.createElement('a');
+          card.href = `/event.html?id=${ev.id}`;
+          card.className = 'card event-card';
+          card.style.display = 'flex';
+          card.innerHTML = `
+            <div>
+              <span class="badge badge-muted">${escapeHtml(ev.event_type)}</span>
+              <h3 style="margin: 6px 0 2px;">${escapeHtml(ev.title)}</h3>
+              <div class="meta">${escapeHtml(ev.venue_name || '')} &middot; ${formatDateTime(ev.starts_at)}</div>
+            </div>
+            <div class="price">${ev.price_from !== null ? 'from ' + formatMoney(ev.price_from) : ''}</div>
+          `;
+          list.appendChild(card);
+        }
+      } catch (err) {
+        list.innerHTML = '';
+        showAlert(err.message, 'error');
+      }
+    }
+
+    document.getElementById('applyBtn').addEventListener('click', loadEvents);
+    document.getElementById('fQ').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadEvents(); });
+    loadEvents();
+  </script>
+</body>
+</html>

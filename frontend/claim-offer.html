@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claim Your Seat — Ticket Booking</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="nav"></div>
+  <main class="narrow">
+    <h1>Your seat is available!</h1>
+    <p class="subtitle">You're next on the waitlist — claim it before the offer expires.</p>
+    <div id="alertBox"></div>
+
+    <div class="card" id="claimCard">
+      <p>Click below to complete your booking for this seat.</p>
+      <button id="claimBtn" style="width:100%;">Claim my seat</button>
+    </div>
+
+    <div class="card hidden" id="confirmationCard">
+      <div class="alert alert-ok">
+        <strong>Booking confirmed!</strong> Ref <code id="confRef"></code> &middot; seats
+        <span id="confSeats"></span> &middot; total <span id="confTotal"></span>.
+        A confirmation email with your QR ticket is on its way.
+      </div>
+      <a href="/bookings.html">View my bookings &rarr;</a>
+    </div>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/nav.js"></script>
+  <script>
+    const token = new URLSearchParams(location.search).get('token');
+
+    if (!token) {
+      showAlert('This claim link is missing its token.', 'error');
+      document.getElementById('claimCard').classList.add('hidden');
+    } else if (!isLoggedIn()) {
+      showAlert('Log in with the account this offer was sent to, then come back to this link to claim it.', 'warn');
+      document.getElementById('claimBtn').addEventListener('click', () => {
+        location.href = `/login.html?next=${encodeURIComponent(location.pathname + location.search)}`;
+      });
+    } else {
+      document.getElementById('claimBtn').addEventListener('click', claim);
+    }
+
+    async function claim() {
+      clearAlert();
+      const btn = document.getElementById('claimBtn');
+      btn.disabled = true;
+      try {
+        const data = await api('/api/waitlist/claim', { method: 'POST', body: { offer_token: token } });
+        const booking = data.booking;
+        document.getElementById('claimCard').classList.add('hidden');
+        document.getElementById('confRef').textContent = booking.ref;
+        document.getElementById('confSeats').textContent = booking.seats.join(', ');
+        document.getElementById('confTotal').textContent = formatMoney(booking.total);
+        document.getElementById('confirmationCard').classList.remove('hidden');
+      } catch (err) {
+        showAlert(err.message, 'error');
+        btn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>

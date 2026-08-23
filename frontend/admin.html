@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin — Ticket Booking</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="nav"></div>
+  <main>
+    <h1>Admin — Venues &amp; Seat Layouts</h1>
+    <div id="alertBox"></div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Create Venue</h2>
+      <form id="createVenueForm">
+        <div class="grid cols-2">
+          <div>
+            <label for="vName">Name</label>
+            <input type="text" id="vName" required>
+          </div>
+          <div>
+            <label for="vAddress">Address</label>
+            <input type="text" id="vAddress">
+          </div>
+        </div>
+        <button type="submit" class="spacer-top">Create Venue</button>
+      </form>
+    </div>
+
+    <h2>My Venues</h2>
+    <div id="venueList"></div>
+    <p id="emptyMsg" class="muted hidden">No venues yet — create one above.</p>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/nav.js"></script>
+  <script>
+    if (!requireAuth('admin')) {
+      document.querySelectorAll('main > *:not(#alertBox)').forEach((el) => el.remove());
+    } else {
+      init();
+    }
+
+    function init() {
+      loadVenues();
+      document.getElementById('createVenueForm').addEventListener('submit', onCreateVenue);
+    }
+
+    async function onCreateVenue(e) {
+      e.preventDefault();
+      clearAlert();
+      try {
+        await api('/api/admin/venues', {
+          method: 'POST',
+          body: { name: document.getElementById('vName').value.trim(), address: document.getElementById('vAddress').value.trim() },
+        });
+        showAlert('Venue created.', 'ok');
+        document.getElementById('createVenueForm').reset();
+        await loadVenues();
+      } catch (err) {
+        showAlert(err.message, 'error');
+      }
+    }
+
+    async function loadVenues() {
+      const list = document.getElementById('venueList');
+      const emptyMsg = document.getElementById('emptyMsg');
+      list.innerHTML = '<p class="muted">Loading&hellip;</p>';
+      emptyMsg.classList.add('hidden');
+      try {
+        const data = await api('/api/admin/venues');
+        list.innerHTML = '';
+        if (data.venues.length === 0) {
+          emptyMsg.classList.remove('hidden');
+          return;
+        }
+        for (const v of data.venues) list.appendChild(renderVenueRow(v));
+      } catch (err) {
+        list.innerHTML = '';
+        showAlert(err.message, 'error');
+      }
+    }
+
+    function renderVenueRow(v) {
+      const details = document.createElement('details');
+      details.className = 'card';
+      details.innerHTML = `
+        <summary><strong>${escapeHtml(v.name)}</strong>${v.address ? ' — ' + escapeHtml(v.address) : ''}</summary>
+        <div class="spacer-top" data-panel>Loading&hellip;</div>
+      `;
+      let loaded = false;
+      details.addEventListener('toggle', async () => {
+        if (details.open && !loaded) {
+          loaded = true;
+          await renderVenueDetail(v.id, details.querySelector('[data-panel]'));
+        }
+      });
+      return details;
+    }
+
+    async function renderVenueDetail(venueId, panel) {
+      try {
+        const { venue } = await api(`/api/admin/venues/${venueId}`);
+
+        panel.innerHTML = `
+          <hr>
+          <h3>Seat Categories</h3>
+          <div data-category-list></div>
+          <div class="form-row spacer-top">
+            <div><input type="text" placeholder="New category name (e.g. Premium)" data-new-category></div>
+            <div style="flex:0 0 auto;"><button type="button" class="small" data-add-category>Add category</button></div>
+          </div>
+
+          <h3>Bulk Add Seats</h3>
+          ${venue.categories.length === 0 ? '<p class="muted">Add a category first.</p>' : `
+            <div class="form-row">
+              <div>
+                <label>Rows (comma-separated)</label>
+                <input type="text" placeholder="A,B,C" data-bulk-rows>
+              </div>
+              <div>
+                <label>Seats per row</label>
+                <input type="number" min="1" value="10" data-bulk-count>
+              </div>
+              <div>
+                <label>Start seat #</label>
+                <input type="number" min="1" value="1" data-bulk-start>
+              </div>
+              <div>
+                <label>Category</label>
+                <select data-bulk-category>
+                  ${venue.categories.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
+                </select>
+              </div>
+              <div style="flex:0 0 auto;"><button type="button" data-bulk-submit>Add seats</button></div>
+            </div>
+          `}
+
+          <h3>Seat Map Preview</h3>
+          <div data-seat-preview class="seatmap"></div>
+
+          <div class="spacer-top">
+            <button type="button" class="danger small" data-delete-venue>Delete venue</button>
+          </div>
+        `;
+
+        renderCategoryList(panel, venueId, venue.categories);
+        renderSeatPreview(panel, venue.categories, venue.seats);
+
+        const addCatBtn = panel.querySelector('[data-add-category]');
+        if (addCatBtn) {
+          addCatBtn.addEventListener('click', async () => {
+            const input = panel.querySelector('[data-new-category]');
+            const name = input.value.trim();
+            if (!name) return;
+            try {
+              await api(`/api/admin/venues/${venueId}/categories`, { method: 'POST', body: { name } });
+              await renderVenueDetail(venueId, panel);
+            } catch (err) {
+              showAlert(err.message, 'error');
+            }
+          });
+        }
+
+        const bulkBtn = panel.querySelector('[data-bulk-submit]');
+        if (bulkBtn) {
+          bulkBtn.addEventListener('click', async () => {
+            const rows = panel.querySelector('[data-bulk-rows]').value.split(',').map((r) => r.trim()).filter(Boolean);
+            const seatsPerRow = Number(panel.querySelector('[data-bulk-count]').value);
+            const startSeatNumber = Number(panel.querySelector('[data-bulk-start]').value);
+            const categoryId = Number(panel.querySelector('[data-bulk-category]').value);
+            if (rows.length === 0 || !seatsPerRow) {
+              showAlert('Enter at least one row label and a seats-per-row count.', 'error');
+              return;
+            }
+            try {
+              const result = await api(`/api/admin/venues/${venueId}/seats/bulk`, {
+                method: 'POST',
+                body: { rows, seats_per_row: seatsPerRow, start_seat_number: startSeatNumber, category_id: categoryId },
+              });
+              showAlert(`Added ${result.created} seat(s).`, 'ok');
+              await renderVenueDetail(venueId, panel);
+            } catch (err) {
+              showAlert(err.message, 'error');
+            }
+          });
+        }
+
+        panel.querySelector('[data-delete-venue]').addEventListener('click', async () => {
+          if (!confirm(`Delete "${venue.name}"? This can't be undone.`)) return;
+          try {
+            await api(`/api/admin/venues/${venueId}`, { method: 'DELETE' });
+            showAlert('Venue deleted.', 'ok');
+            await loadVenues();
+          } catch (err) {
+            showAlert(err.message, 'error');
+          }
+        });
+      } catch (err) {
+        panel.innerHTML = `<div class="alert alert-error">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function renderCategoryList(panel, venueId, categories) {
+      const el = panel.querySelector('[data-category-list]');
+      if (categories.length === 0) {
+        el.innerHTML = '<p class="muted">No categories yet.</p>';
+        return;
+      }
+      el.innerHTML = categories.map((c) => `
+        <div class="form-row" style="align-items:center;">
+          <div style="flex:0 0 160px;">${escapeHtml(c.name)}</div>
+          <div style="flex:0 0 auto;"><button type="button" class="small secondary" data-remove-category="${c.id}">Remove</button></div>
+        </div>
+      `).join('');
+      el.querySelectorAll('[data-remove-category]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          try {
+            await api(`/api/admin/venues/${venueId}/categories/${btn.dataset.removeCategory}`, { method: 'DELETE' });
+            await renderVenueDetail(venueId, panel);
+          } catch (err) {
+            showAlert(err.message, 'error');
+          }
+        });
+      });
+    }
+
+    function renderSeatPreview(panel, categories, seats) {
+      const el = panel.querySelector('[data-seat-preview]');
+      if (seats.length === 0) {
+        el.innerHTML = '<p class="muted">No seats yet.</p>';
+        return;
+      }
+      const nameByCategory = Object.fromEntries(categories.map((c) => [c.id, c.name]));
+      const byRow = {};
+      for (const s of seats) {
+        (byRow[s.row_label] ||= []).push(s);
+      }
+      el.innerHTML = '';
+      for (const rowLabel of Object.keys(byRow).sort()) {
+        const seatsInRow = byRow[rowLabel].sort((a, b) => a.seat_number - b.seat_number);
+        const rowEl = document.createElement('div');
+        rowEl.className = 'seat-row';
+        rowEl.innerHTML = `<span class="row-label">${escapeHtml(rowLabel)}</span>`;
+        for (const s of seatsInRow) {
+          const cell = document.createElement('span');
+          cell.className = 'seat available';
+          cell.style.cursor = 'default';
+          cell.textContent = s.seat_number;
+          cell.title = `${s.label} — ${escapeHtml(nameByCategory[s.category_id] || '')}`;
+          rowEl.appendChild(cell);
+        }
+        el.appendChild(rowEl);
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Register — Ticket Booking</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="nav"></div>
+  <main class="narrow">
+    <h1>Create an account</h1>
+    <p class="subtitle">Admin accounts are seeded by the operator and can't self-register.</p>
+    <div id="alertBox"></div>
+    <div class="card">
+      <form id="registerForm">
+        <label for="name">Name</label>
+        <input type="text" id="name" required autocomplete="name">
+
+        <label for="email">Email</label>
+        <input type="email" id="email" required autocomplete="email">
+
+        <label for="password">Password</label>
+        <input type="password" id="password" required autocomplete="new-password" minlength="6">
+
+        <label for="role">I am a&hellip;</label>
+        <select id="role">
+          <option value="customer">Customer — I want to book tickets</option>
+          <option value="organiser">Organiser — I create movie/event listings</option>
+        </select>
+
+        <button type="submit" class="spacer-top" style="width: 100%;">Register</button>
+      </form>
+    </div>
+    <p class="muted">Already have an account? <a href="/login.html">Log in</a>.</p>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/nav.js"></script>
+  <script>
+    document.getElementById('registerForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearAlert();
+      const name = document.getElementById('name').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const role = document.getElementById('role').value;
+      try {
+        const data = await api('/api/auth/register', { method: 'POST', auth: false, body: { name, email, password, role } });
+        setToken(data.token);
+        setUser(data.user);
+        location.href = landingPageFor(data.user.role);
+      } catch (err) {
+        showAlert(err.message, 'error');
+      }
+    });
+  </script>
+</body>
+</html>

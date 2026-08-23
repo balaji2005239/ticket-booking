@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Organiser Dashboard — Ticket Booking</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="nav"></div>
+  <main>
+    <h1>Organiser Dashboard</h1>
+    <div id="alertBox"></div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Create Event</h2>
+      <form id="createForm">
+        <div class="grid cols-2">
+          <div>
+            <label for="cTitle">Title</label>
+            <input type="text" id="cTitle" required>
+
+            <label for="cType">Type</label>
+            <select id="cType">
+              <option value="movie">Movie</option>
+              <option value="concert">Concert</option>
+            </select>
+
+            <label for="cStarts">Date &amp; time</label>
+            <input type="datetime-local" id="cStarts" required>
+          </div>
+          <div>
+            <label for="cVenue">Venue</label>
+            <select id="cVenue" required></select>
+
+            <label for="cDesc">Description</label>
+            <textarea id="cDesc"></textarea>
+          </div>
+        </div>
+
+        <h3>Pricing per category</h3>
+        <p class="muted" id="pricingHint">Pick a venue to see its seat categories.</p>
+        <div id="pricingInputs"></div>
+
+        <button type="submit" class="spacer-top">Create Event</button>
+      </form>
+    </div>
+
+    <h2>My Events</h2>
+    <div id="eventList"></div>
+    <p id="emptyMsg" class="muted hidden">No events yet — create one above.</p>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/nav.js"></script>
+  <script>
+    if (!requireAuth('organiser')) {
+      document.querySelectorAll('main > *:not(#alertBox)').forEach((el) => el.remove());
+    } else {
+      init();
+    }
+
+    let venues = [];
+
+    async function init() {
+      await loadVenues();
+      await loadMyEvents();
+      document.getElementById('cVenue').addEventListener('change', onVenueChange);
+      document.getElementById('createForm').addEventListener('submit', onCreateSubmit);
+    }
+
+    async function loadVenues() {
+      try {
+        const data = await api('/api/organiser/venues');
+        venues = data.venues;
+        const sel = document.getElementById('cVenue');
+        sel.innerHTML = '<option value="">Select a venue&hellip;</option>' +
+          venues.map((v) => `<option value="${v.id}">${escapeHtml(v.name)}</option>`).join('');
+      } catch (err) {
+        showAlert(err.message, 'error');
+      }
+    }
+
+    async function onVenueChange() {
+      const venueId = document.getElementById('cVenue').value;
+      const hint = document.getElementById('pricingHint');
+      const container = document.getElementById('pricingInputs');
+      container.innerHTML = '';
+      if (!venueId) {
+        hint.textContent = 'Pick a venue to see its seat categories.';
+        return;
+      }
+      try {
+        const data = await api(`/api/organiser/venues/${venueId}`);
+        const categories = data.venue.categories;
+        if (categories.length === 0) {
+          hint.textContent = 'This venue has no seat categories yet — ask an admin to add some.';
+          return;
+        }
+        hint.textContent = 'Leave a category blank to skip pricing it for now (you can add it later).';
+        container.innerHTML = categories.map((c) => `
+          <div class="form-row">
+            <div style="flex:0 0 160px;">${escapeHtml(c.name)}</div>
+            <div><input type="number" min="0" step="0.01" placeholder="price" data-category-id="${c.id}"></div>
+          </div>
+        `).join('');
+      } catch (err) {
+        showAlert(err.message, 'error');
+      }
+    }
+
+    async function onCreateSubmit(e) {
+      e.preventDefault();
+      clearAlert();
+      const venueId = Number(document.getElementById('cVenue').value);
+      if (!venueId) {
+        showAlert('Pick a venue.', 'error');
+        return;
+      }
+      const startsLocal = document.getElementById('cStarts').value; // e.g. 2026-09-01T18:30, in the browser's local time
+      if (!startsLocal) {
+        showAlert('Pick a date and time.', 'error');
+        return;
+      }
+      // datetime-local has no timezone info; new Date() interprets it as local
+      // time, so convert to a real UTC instant before sending — the backend
+      // stores naive UTC and the rest of this frontend displays stored
+      // timestamps back in the viewer's local time (see formatDateTime()).
+      const startsUtc = new Date(startsLocal).toISOString();
+
+      const pricing = [];
+      document.querySelectorAll('#pricingInputs input[data-category-id]').forEach((input) => {
+        const v = input.value.trim();
+        if (v !== '') pricing.push({ category_id: Number(input.dataset.categoryId), price: Number(v) });
+      });
+
+      const body = {
+        title: document.getElementById('cTitle').value.trim(),
+        event_type: document.getElementById('cType').value,
+        description: document.getElementById('cDesc').value.trim(),
+        venue_id: venueId,
+        starts_at: startsUtc,
+      };
+      if (pricing.length > 0) body.pricing = pricing;
+
+      try {
+        await api('/api/organiser/events', { method: 'POST', body });
+        showAlert('Event created.', 'ok');
+        document.getElementById('createForm').reset();
+        document.getElementById('pricingInputs').innerHTML = '';
+        document.getElementById('pricingHint').textContent = 'Pick a venue to see its seat categories.';
+        await loadMyEvents();
+      } catch (err) {
+        showAlert(err.message, 'error');
+      }
+    }
+
+    async function loadMyEvents() {
+      const list = document.getElementById('eventList');
+      const emptyMsg = document.getElementById('emptyMsg');
+      list.innerHTML = '<p class="muted">Loading&hellip;</p>';
+      emptyMsg.classList.add('hidden');
+      try {
+        const data = await api('/api/organiser/events');
+        list.innerHTML = '';
+        if (data.events.length === 0) {
+          emptyMsg.classList.remove('hidden');
+          return;
+        }
+        for (const ev of data.events) list.appendChild(renderEventRow(ev));
+      } catch (err) {
+        list.innerHTML = '';
+        showAlert(err.message, 'error');
+      }
+    }
+
+    function renderEventRow(ev) {
+      const details = document.createElement('details');
+      details.className = 'card';
+      details.innerHTML = `
+        <summary><strong>${escapeHtml(ev.title)}</strong> — ${escapeHtml(ev.venue_name || '')}
+          &middot; ${formatDateTime(ev.starts_at)} <span class="badge badge-muted">${escapeHtml(ev.event_type)}</span></summary>
+        <div class="spacer-top" data-panel>Loading&hellip;</div>
+      `;
+      let loaded = false;
+      details.addEventListener('toggle', async () => {
+        if (details.open && !loaded) {
+          loaded = true;
+          await renderEventDetail(ev.id, details.querySelector('[data-panel]'));
+        }
+      });
+      return details;
+    }
+
+    async function renderEventDetail(eventId, panel) {
+      try {
+        const [{ event: ev }, summary, bookingsData] = await Promise.all([
+          api(`/api/organiser/events/${eventId}`),
+          api(`/api/organiser/events/${eventId}/summary`),
+          api(`/api/organiser/events/${eventId}/bookings`),
+        ]);
+        const venue = await api(`/api/organiser/venues/${ev.venue_id}`);
+        const pricedIds = new Set(ev.pricing.map((p) => p.category_id));
+        const unpricedCategories = venue.venue.categories.filter((c) => !pricedIds.has(c.id));
+
+        panel.innerHTML = `
+          <hr>
+          <h3>Summary</h3>
+          <div class="grid cols-2">
+            <div>Confirmed bookings: <strong>${summary.confirmed_bookings}</strong></div>
+            <div>Cancelled bookings: <strong>${summary.cancelled_bookings}</strong></div>
+            <div>Seats booked: <strong>${summary.seats_booked}</strong></div>
+            <div>Revenue: <strong>${formatMoney(summary.revenue)}</strong></div>
+          </div>
+          ${summary.revenue_by_category.length ? `
+            <table class="spacer-top">
+              <tr><th>Category</th><th>Seats sold</th><th>Revenue</th></tr>
+              ${summary.revenue_by_category.map((r) => `<tr><td>${escapeHtml(r.category_name)}</td><td>${r.seats_sold}</td><td>${formatMoney(r.revenue)}</td></tr>`).join('')}
+            </table>` : ''}
+
+          <h3>Pricing</h3>
+          <div data-pricing-list></div>
+          ${unpricedCategories.length ? `
+            <div class="form-row spacer-top">
+              <div style="flex:0 0 160px;">
+                <select data-new-price-category>
+                  ${unpricedCategories.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
+                </select>
+              </div>
+              <div><input type="number" min="0" step="0.01" placeholder="price" data-new-price-value></div>
+              <div style="flex:0 0 auto;"><button type="button" class="small" data-set-price>Set price</button></div>
+            </div>` : ''}
+
+          <h3>Bookings</h3>
+          ${bookingsData.bookings.length ? `
+            <table>
+              <tr><th>Ref</th><th>Customer</th><th>Seats</th><th>Total</th><th>Status</th></tr>
+              ${bookingsData.bookings.map((b) => `
+                <tr>
+                  <td><code>${escapeHtml(b.ref)}</code></td>
+                  <td>${b.customer ? escapeHtml(b.customer.name) + '<br><span class="muted">' + escapeHtml(b.customer.email) + '</span>' : '—'}</td>
+                  <td>${b.seats.join(', ')}</td>
+                  <td>${formatMoney(b.total)}</td>
+                  <td>${b.status === 'confirmed' ? '<span class="badge badge-ok">confirmed</span>' : '<span class="badge badge-muted">cancelled</span>'}</td>
+                </tr>
+              `).join('')}
+            </table>` : '<p class="muted">No bookings yet.</p>'}
+
+          <div class="spacer-top">
+            <button type="button" class="danger small" data-delete-event>Delete event</button>
+          </div>
+        `;
+
+        renderPricingList(panel, eventId, ev.pricing);
+
+        const setBtn = panel.querySelector('[data-set-price]');
+        if (setBtn) {
+          setBtn.addEventListener('click', async () => {
+            const categoryId = Number(panel.querySelector('[data-new-price-category]').value);
+            const price = Number(panel.querySelector('[data-new-price-value]').value);
+            if (!price || price <= 0) { showAlert('Enter a valid price.', 'error'); return; }
+            try {
+              await api(`/api/organiser/events/${eventId}/pricing`, { method: 'PUT', body: { category_id: categoryId, price } });
+              await renderEventDetail(eventId, panel);
+            } catch (err) {
+              showAlert(err.message, 'error');
+            }
+          });
+        }
+
+        panel.querySelector('[data-delete-event]').addEventListener('click', async () => {
+          if (!confirm(`Delete "${ev.title}"? This can't be undone.`)) return;
+          try {
+            await api(`/api/organiser/events/${eventId}`, { method: 'DELETE' });
+            showAlert('Event deleted.', 'ok');
+            await loadMyEvents();
+          } catch (err) {
+            showAlert(err.message, 'error');
+          }
+        });
+      } catch (err) {
+        panel.innerHTML = `<div class="alert alert-error">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function renderPricingList(panel, eventId, pricing) {
+      const el = panel.querySelector('[data-pricing-list]');
+      if (pricing.length === 0) {
+        el.innerHTML = '<p class="muted">No pricing set yet.</p>';
+        return;
+      }
+      el.innerHTML = pricing.map((p) => `
+        <div class="form-row" style="align-items:center;">
+          <div style="flex:0 0 160px;">${escapeHtml(p.category_name)}</div>
+          <div>${formatMoney(p.price)}</div>
+          <div style="flex:0 0 auto;"><button type="button" class="small secondary" data-remove-price="${p.category_id}">Remove</button></div>
+        </div>
+      `).join('');
+      el.querySelectorAll('[data-remove-price]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          try {
+            await api(`/api/organiser/events/${eventId}/pricing/${btn.dataset.removePrice}`, { method: 'DELETE' });
+            await renderEventDetail(eventId, panel);
+          } catch (err) {
+            showAlert(err.message, 'error');
+          }
+        });
+      });
+    }
+  </script>
+</body>
+</html>

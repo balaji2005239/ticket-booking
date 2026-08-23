@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Event — Ticket Booking</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="nav"></div>
+  <main>
+    <div id="alertBox"></div>
+
+    <div class="card">
+      <span id="typeBadge" class="badge badge-muted"></span>
+      <h1 id="title" style="margin-top: 6px;"></h1>
+      <div id="meta" class="subtitle"></div>
+      <p id="description"></p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top: 0;">Availability</h2>
+      <div id="availability"></div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top: 0;">Seat Map</h2>
+      <p class="muted" id="seatHint">Select your seats below.</p>
+      <div id="seatmap" class="seatmap"></div>
+      <div class="legend">
+        <span><span class="swatch" style="background:#eef2ff;border:1px solid #c7d2fe;"></span>Available</span>
+        <span><span class="swatch" style="background:#2563eb;"></span>Selected</span>
+        <span><span class="swatch" style="background:#fef3c7;border:1px solid #d97706;"></span>Held by someone</span>
+        <span><span class="swatch" style="background:#fee2e2;border:1px solid #dc2626;"></span>Booked</span>
+      </div>
+
+      <div id="selectionBar" class="spacer-top hidden">
+        <strong id="selectionSummary"></strong>
+        <button id="holdBtn" class="spacer-top" style="display:block;">Hold Selected Seats</button>
+      </div>
+
+      <div id="holdBar" class="spacer-top hidden">
+        <div class="alert alert-warn">
+          Holding <span id="holdSeats"></span> — checkout within
+          <span id="countdown" class="countdown"></span> or the hold releases automatically.
+        </div>
+        <button id="checkoutBtn">Checkout — <span id="holdTotal"></span></button>
+        <button id="releaseBtn" class="secondary">Release hold</button>
+      </div>
+
+      <div id="confirmation" class="hidden">
+        <div class="alert alert-ok">
+          <strong>Booking confirmed!</strong> Ref <code id="confRef"></code> &middot; seats
+          <span id="confSeats"></span> &middot; total <span id="confTotal"></span>.
+          A confirmation email with your QR ticket is on its way.
+          <div class="spacer-top"><a href="/bookings.html">View my bookings &rarr;</a></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/nav.js"></script>
+  <script>
+    const eventId = new URLSearchParams(location.search).get('id');
+    const user = getUser();
+    const isCustomer = user && user.role === 'customer';
+
+    let seatmapData = null;       // last fetched /seatmap response
+    let selectedSeatIds = new Set(); // pre-hold selection
+    let activeHold = null;        // { hold_key, expires_at, seatIds: Set, seats: [{seat_id,label,price,category_id}] }
+    let countdownTimer = null;
+    let pollTimer = null;
+    const joinedWaitlist = new Set(); // category_ids already joined this session
+
+    if (!eventId) {
+      showAlert('No event specified.', 'error');
+    } else {
+      init();
+    }
+
+    async function init() {
+      await loadEventDetail();
+      await refreshSeatmap();
+      pollTimer = setInterval(refreshSeatmap, 5000);
+
+      document.getElementById('holdBtn').addEventListener('click', onHoldClick);
+      document.getElementById('checkoutBtn').addEventListener('click', onCheckoutClick);
+      document.getElementById('releaseBtn').addEventListener('click', onReleaseClick);
+    }
+
+    async function loadEventDetail() {
+      try {
+        const data = await api(`/api/events/${eventId}`, { auth: false });
+        const ev = data.event;
+        document.getElementById('title').textContent = ev.title;
+        document.getElementById('typeBadge').textContent = ev.event_type;
+        document.getElementById('meta').textContent =
+          `${ev.venue ? ev.venue.name : ''}${ev.venue && ev.venue.address ? ' — ' + ev.venue.address : ''} · ${formatDateTime(ev.starts_at)}`;
+        document.getElementById('description').textContent = ev.description || '';
+      } catch (err) {
+        showAlert(err.message, 'error');
+      }
+    }
+
+    async function refreshSeatmap() {
+      try {
+        const data = await api(`/api/events/${eventId}/seatmap`, { auth: false });
+        seatmapData = data;
+        renderSeatmap();
+        renderAvailability();
+      } catch (err) {
+        showAlert(err.message, 'error');
+      }
+    }
+
+    function renderSeatmap() {
+      const container = document.getElementById('seatmap');
+      container.innerHTML = '';
+      const interactive = isCustomer && !activeHold;
+
+      for (const row of seatmapData.rows) {
+        const rowEl = document.createElement('div');
+        rowEl.className = 'seat-row';
+        rowEl.innerHTML = `<span class="row-label">${escapeHtml(row.row_label)}</span>`;
+        for (const seat of row.seats) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'seat';
+          btn.textContent = seat.seat_number;
+          btn.title = `${seat.label} — ${formatMoney(seat.price)}`;
+
+          const isMine = activeHold && activeHold.seatIds.has(seat.seat_id);
+          const isSelected = selectedSeatIds.has(seat.seat_id);
+
+          if (isMine || isSelected) {
+            btn.classList.add('selected');
+          } else {
+            btn.classList.add(seat.status); // available | held | booked
+          }
+
+          if (interactive && seat.status === 'available') {
+            btn.addEventListener('click', () => toggleSeat(seat));
+          } else if (!isMine) {
+            btn.disabled = true;
+          }
+          rowEl.appendChild(btn);
+        }
+        container.appendChild(rowEl);
+      }
+
+      updateSelectionBar();
+    }
+
+    function toggleSeat(seat) {
+      if (selectedSeatIds.has(seat.seat_id)) {
+        selectedSeatIds.delete(seat.seat_id);
+      } else {
+        selectedSeatIds.add(seat.seat_id);
+      }
+      renderSeatmap();
+    }
+
+    function seatById(seatId) {
+      for (const row of seatmapData.rows) {
+        const found = row.seats.find((s) => s.seat_id === seatId);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    function updateSelectionBar() {
+      const bar = document.getElementById('selectionBar');
+      if (activeHold || selectedSeatIds.size === 0) {
+        bar.classList.add('hidden');
+        return;
+      }
+      bar.classList.remove('hidden');
+      const seats = [...selectedSeatIds].map(seatById).filter(Boolean);
+      const total = seats.reduce((sum, s) => sum + (s.price || 0), 0);
+      document.getElementById('selectionSummary').textContent =
+        `${seats.length} seat${seats.length === 1 ? '' : 's'} selected: ${seats.map((s) => s.label).join(', ')} — ${formatMoney(total)}`;
+    }
+
+    async function onHoldClick() {
+      if (!isCustomer) {
+        showAlert(user ? 'Only customers can book seats.' : 'Log in as a customer to select seats.', 'error');
+        return;
+      }
+      clearAlert();
+      try {
+        const data = await api(`/api/events/${eventId}/hold`, {
+          method: 'POST',
+          body: { seat_ids: [...selectedSeatIds] },
+        });
+        const hold = data.hold;
+        activeHold = {
+          hold_key: hold.hold_key,
+          expires_at: hold.expires_at,
+          seatIds: new Set(hold.seats.map((s) => s.seat_id)),
+          seats: hold.seats,
+        };
+        selectedSeatIds = new Set();
+        document.getElementById('holdSeats').textContent = hold.seats.map((s) => s.label).join(', ');
+        const total = hold.seats.reduce((sum, s) => sum + (seatById(s.seat_id)?.price || 0), 0);
+        document.getElementById('holdTotal').textContent = formatMoney(total);
+        document.getElementById('holdBar').classList.remove('hidden');
+        startCountdown(hold.expires_at);
+        // Full refresh, not just a local re-render: pulls the server-confirmed
+        // seat/availability state immediately, rather than leaving the
+        // Availability panel showing stale counts until the next 5s poll tick.
+        await refreshSeatmap();
+      } catch (err) {
+        showAlert(err.message, 'error');
+        await refreshSeatmap(); // someone may have beaten us to a seat — show current truth
+      }
+    }
+
+    function startCountdown(expiresAtIso) {
+      const expiresAt = new Date(expiresAtIso.endsWith('Z') ? expiresAtIso : expiresAtIso + 'Z').getTime();
+      clearInterval(countdownTimer);
+      const el = document.getElementById('countdown');
+
+      function tick() {
+        const remainingMs = expiresAt - Date.now();
+        if (remainingMs <= 0) {
+          clearInterval(countdownTimer);
+          onHoldExpired();
+          return;
+        }
+        const totalSec = Math.floor(remainingMs / 1000);
+        const mm = String(Math.floor(totalSec / 60)).padStart(2, '0');
+        const ss = String(totalSec % 60).padStart(2, '0');
+        el.textContent = `${mm}:${ss}`;
+        el.classList.toggle('low', totalSec < 60);
+      }
+      tick();
+      countdownTimer = setInterval(tick, 1000);
+    }
+
+    function onHoldExpired() {
+      activeHold = null;
+      document.getElementById('holdBar').classList.add('hidden');
+      showAlert('Your hold expired — the seat(s) are back in the pool. Please select again.', 'warn');
+      refreshSeatmap();
+    }
+
+    async function onCheckoutClick() {
+      if (!activeHold) return;
+      clearAlert();
+      try {
+        const data = await api('/api/checkout', { method: 'POST', body: { hold_key: activeHold.hold_key } });
+        clearInterval(countdownTimer);
+        const booking = data.booking;
+        document.getElementById('holdBar').classList.add('hidden');
+        document.getElementById('confRef').textContent = booking.ref;
+        document.getElementById('confSeats').textContent = booking.seats.join(', ');
+        document.getElementById('confTotal').textContent = formatMoney(booking.total);
+        document.getElementById('confirmation').classList.remove('hidden');
+        activeHold = null;
+        await refreshSeatmap();
+      } catch (err) {
+        showAlert(err.message, 'error');
+        if (err.status === 404 || err.status === 410) {
+          clearInterval(countdownTimer);
+          activeHold = null;
+          document.getElementById('holdBar').classList.add('hidden');
+          await refreshSeatmap();
+        }
+      }
+    }
+
+    async function onReleaseClick() {
+      if (!activeHold) return;
+      try {
+        await api(`/api/holds/${activeHold.hold_key}`, { method: 'DELETE' });
+        clearInterval(countdownTimer);
+        activeHold = null;
+        document.getElementById('holdBar').classList.add('hidden');
+        showAlert('Hold released.', 'ok');
+        await refreshSeatmap();
+      } catch (err) {
+        showAlert(err.message, 'error');
+      }
+    }
+
+    function renderAvailability() {
+      const el = document.getElementById('availability');
+      el.innerHTML = '';
+
+      const counts = {}; // category_id -> {name, price, available, total}
+      for (const cat of seatmapData.categories) {
+        counts[cat.id] = { name: cat.name, price: cat.price, available: 0, total: 0 };
+      }
+      for (const row of seatmapData.rows) {
+        for (const seat of row.seats) {
+          const c = counts[seat.category_id];
+          if (!c) continue;
+          c.total += 1;
+          if (seat.status === 'available') c.available += 1;
+        }
+      }
+
+      for (const [categoryId, c] of Object.entries(counts)) {
+        const row = document.createElement('div');
+        row.className = 'form-row';
+        row.style.alignItems = 'center';
+        const soldOut = c.available === 0;
+        const badge = soldOut
+          ? '<span class="badge badge-danger">Sold out</span>'
+          : `<span class="badge badge-ok">${c.available}/${c.total} available</span>`;
+
+        let waitlistBtn = '';
+        if (soldOut && isCustomer) {
+          if (joinedWaitlist.has(Number(categoryId))) {
+            waitlistBtn = `<span class="badge badge-muted">On waitlist &check;</span>`;
+          } else {
+            waitlistBtn = `<button type="button" class="small secondary" data-cat="${categoryId}">Join Waitlist</button>`;
+          }
+        }
+
+        row.innerHTML = `
+          <div><strong>${escapeHtml(c.name)}</strong> — ${formatMoney(c.price)} &nbsp; ${badge}</div>
+          <div>${waitlistBtn}</div>
+        `;
+        el.appendChild(row);
+      }
+
+      el.querySelectorAll('button[data-cat]').forEach((btn) => {
+        btn.addEventListener('click', () => joinWaitlist(Number(btn.dataset.cat)));
+      });
+    }
+
+    async function joinWaitlist(categoryId) {
+      if (!isCustomer) {
+        showAlert(user ? 'Only customers can join a waitlist.' : 'Log in as a customer to join the waitlist.', 'error');
+        return;
+      }
+      clearAlert();
+      try {
+        await api(`/api/events/${eventId}/waitlist`, { method: 'POST', body: { category_id: categoryId } });
+        joinedWaitlist.add(categoryId);
+        showAlert("You're on the waitlist — we'll email you if a seat opens up.", 'ok');
+        renderAvailability();
+      } catch (err) {
+        if (err.status === 409 && /already on the waitlist/i.test(err.message)) {
+          joinedWaitlist.add(categoryId);
+          renderAvailability();
+        } else {
+          showAlert(err.message, 'error');
+        }
+      }
+    }
+  </script>
+</body>
+</html>

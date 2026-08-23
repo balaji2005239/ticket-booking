@@ -1,0 +1,360 @@
+# Ticket Booking System — Project Brief
+
+## Objective (from assignment)
+Build a ticket booking platform for movies/concerts where customers book seats
+from a visual seat map, held seats auto-release on checkout abandonment,
+sold-out events have a waitlist with automatic seat assignment on cancellation,
+and every confirmed booking produces an email with a QR code ticket.
+
+## Scope of Work
+- **Admin** creates/manages venues with seat layout and seat categories (e.g. Premium, Standard)
+- **Organiser** registers, logs in, creates movie/event listings with venue, date, time,
+  per-category pricing
+- **Customer** registers, logs in, browses/filters events, views a visual seat map with
+  real-time seat status (available / held / booked)
+- Customer selects seats → system places a hold with configurable TTL (default 10 min);
+  held seats show as unavailable to others
+- Checkout abandonment → held seats auto-release; seat map updates in real time
+- Two customers must never hold/book the same seat (concurrency protection)
+- Successful booking → email with QR code ticket; QR encodes booking reference
+- Sold-out event → customer can join a waitlist for a specific seat category
+- Booking cancelled → seat offered to next waitlisted customer for that category;
+  they get an email with a time-limited link to complete booking
+- If waitlisted customer doesn't complete booking in time → seat offered to next in line
+- Customer can view booking history and cancel a booking
+- Organiser can view booking summary and revenue per event
+
+## Technical Expectations
+- Backend API, Frontend, Database with role-based auth (customer / organiser / admin)
+- Seat map stored per show with per-seat status; visual grid on frontend
+- Seat hold TTL enforced via scheduler or DB-level expiry
+- Concurrency protection: simultaneous attempts for the same seat must not both succeed
+- Waitlist queue per seat category; auto-assignment + time-limited offer flow on cancellation
+- QR code generation on booking; email delivery (any free-tier service)
+
+## Deliverables
+1. Zip file with complete source code
+2. README: setup guide, `.env.example`, API docs, DB schema, hold/waitlist logic explanation
+3. Hosted application URL (Vercel, Render, Railway, or similar)
+4. System design write-up (800 words max) — seat hold/TTL, concurrency prevention,
+   waitlist auto-assignment flow, time-limited offer handling
+   → **already drafted, see `system_design_writeup.docx`, exactly 800 words**
+
+## Evaluation Focus
+- Seat hold TTL and auto-release mechanism
+- Concurrency protection for simultaneous seat selection
+- Waitlist auto-assignment and time-limited offer flow
+- Seat map data model and real-time status updates
+- QR code generation and email delivery
+- API design, code structure, and documentation
+
+## Submission Guidelines
+- GitHub repo, branch `main`, public, fully downloadable — OR public Google Drive link (<1GB)
+- Exclude: `node_modules`, `.env`, build artifacts (`dist/`, `.next/`, `out/`), editor folders
+- No unnecessary packages; keep dependencies minimal
+- App must run without errors; properly structured/named files; documented where needed
+
+---
+
+## Architecture Decisions Made
+- **Backend:** Flask + SQLAlchemy, Flask-JWT-Extended (auth), APScheduler (TTL expiry),
+  `qrcode` (QR generation), smtplib (email — no extra email SDK)
+- **Database:** **PostgreSQL only** — no Redis. Seat holds and waitlist offers live as rows
+  with `*_expires_at` timestamps; APScheduler sweeps every ~30s to expire them.
+  Chosen for simpler hosting/single dependency over Redis-based TTL (which was considered
+  and rejected for this project's scale).
+- **Concurrency:** `SELECT ... FOR UPDATE` (row-level pessimistic lock) inside the hold and
+  checkout transactions, backed by a DB unique constraint on `(event_id, seat_id)` in
+  `seat_status`. First transaction to commit wins; loser gets 409. This is explicit FIFO
+  ordering under contention.
+- **Frontend:** **Plain HTML/CSS/JS** — no React/Vite. Chosen for simplicity; the seat map
+  is a rendered grid with periodic polling of `/api` for live status, not a SPA framework.
+- **Hosting:** Backend + Postgres on Render/Railway; frontend as static files (can be served
+  from the same Flask app or a separate static host).
+- **Migrations:** None — `db.create_all()` on startup. Simpler for a single deploy.
+- **No microservices, no Kafka/RabbitMQ, no Elasticsearch, no CDN.** Those ideas from the
+  two BookMyShow system-design references (Medium article by Prithwish Samanta, and the
+  GeeksforGeeks "Design BookMyShow" article) were reviewed and deliberately NOT adopted —
+  they're for distributed, high-scale systems; this is a single-instance gradeable app.
+  The *concepts* (two-phase tentative→confirm booking, TTL-based seat blocking, FIFO
+  ordering, lease-style waitlist offers) were kept; the infrastructure was dropped.
+  This trade-off is explained in the "How This Scales" section of the design write-up.
+
+## Data Model (implemented)
+- `User` — id, name, email, password_hash, role (customer/organiser/admin)
+- `Venue` — id, name, address, created_by (admin)
+- `SeatCategory` — id, venue_id, name (Premium/Standard)
+- `Seat` — id, venue_id, category_id, row_label, seat_number; unique per venue position
+- `Event` — id, organiser_id, venue_id, title, event_type, description, starts_at
+- `EventPricing` — id, event_id, category_id, price; unique per (event, category)
+- `SeatStatus` — id, event_id, seat_id, status (available/held/booked), held_by, hold_key,
+  hold_expires_at; unique (event_id, seat_id). **This is the concurrency core.**
+- `Booking` — id, ref (12-char UUID-derived), event_id, customer_id, total, status
+  (confirmed/cancelled), created_at, cancelled_at, hold_key (unique, added in step 4 —
+  the consumed seat_status.hold_key, so `checkout()` can be idempotent on retry)
+- `BookingSeat` — id, booking_id, seat_id, label (snapshot e.g. "A12")
+- `Waitlist` — id, event_id, category_id, customer_id, status (waiting/offered/converted/
+  expired/cancelled), created_at, offer_token, offer_seat_id, offer_expires_at
+
+## What's Built So Far
+- Project scaffold: `config.py`, `app/extensions.py`, `app/__init__.py` (app factory),
+  `run.py`, `requirements.txt`, `.env.example`, `.gitignore`
+- All models above, in `app/models/`, wired into `db.create_all()`. `Event` now also
+  has a `seat_statuses` relationship with `cascade="all, delete-orphan"` (added while
+  building step 3 — see note below).
+- `app/routes/auth.py` — register (with role, blocks self-registered admin), login, `/me`
+  — **tested and passing** (health check, register, duplicate email 409, admin-blocked 403,
+  login, bad login 401, `/me` with/without token)
+- `app/routes/venues.py` — **admin routes**, `role_required(ROLE_ADMIN)`, scoped to the
+  creating admin (cross-admin access → 404): venue CRUD, seat category CRUD
+  (create/rename/delete, 409 on dup name or delete-with-seats), bulk seat creation
+  (generative `rows` + `seats_per_row` + `category_id`, or an explicit `seats` list;
+  409 on any conflicting seat position). Bulk seat creation also backfills
+  `SeatStatus` rows for any events already created against that venue.
+  — **tested and passing**, 26/26 smoke-test checks.
+- `app/routes/events.py` — **organiser routes** at `/api/organiser`, `role_required(ROLE_ORGANISER)`,
+  scoped to the owning organiser (cross-organiser access → 404): read-only venue browsing
+  (to pick a venue + see its categories), event CRUD (venue_id immutable after create),
+  per-category pricing (inline on create, or upsert/delete via `PUT`/`DELETE .../pricing`),
+  booking summary + revenue-per-event (`GET .../summary`), per-event booking list
+  (`GET .../bookings`). Event creation seeds one `SeatStatus` row per venue seat
+  (`available`) — this is what the seat map reads and what the hold/checkout
+  transactions will `SELECT ... FOR UPDATE` against in step 4.
+  — **tested and passing**, 36/36 smoke-test checks.
+- `app/routes/browse.py` — **public customer browse + seat-map routes** at `/api/events`,
+  no auth required: `GET /api/events` (filter by `event_type`, `venue_id`, `q` title search,
+  `date` or `from`/`to`, defaults to upcoming-only, paginated, includes `price_from` per
+  event), `GET /api/events/<id>` (detail + per-category availability counts + `sold_out`
+  flag), `GET /api/events/<id>/seatmap` (seats grouped by row with live
+  available/held/booked status, no PII). — **tested and passing**, 28/28 smoke-test checks.
+- `app/utils/auth.py` — `role_required(*roles)` decorator, `current_user()` helper
+- `app/utils/dates.py` — `parse_iso_datetime()` / `parse_date()`, shared by events.py and browse.py
+- `app/utils/email.py` — SMTP sender stub (HTML + attachments), fails soft
+- `app/scheduler.py` — APScheduler wired to call `release_expired_holds()` and
+  `expire_stale_offers()` every `SCHEDULER_INTERVAL_SECONDS` (default 30s). These two
+  functions **do not exist yet** — scheduler lazily imports them from
+  `app/services/seat_service.py` and `app/services/waitlist_service.py` (not yet created),
+  so the app runs fine without erroring in the meantime.
+
+**Note on `SeatStatus` lifecycle:** rows are created (all `available`) when an event is
+created, covering every seat the venue has at that moment, and backfilled if an admin
+adds more seats to the venue afterward. `Event.seat_statuses` cascades on delete (they're
+ephemeral live state); `Booking` has no such cascade, so an event with real bookings still
+correctly blocks deletion with a 409 — only an event with zero bookings can be deleted,
+even though it always owns `seat_status` rows from the moment it's created.
+
+- `app/services/seat_service.py` — the concurrency core, per the architecture decisions
+  above: every read-then-write of a `seat_status` row happens inside `SELECT ... FOR
+  UPDATE` (via `_lock_for_update()`, which no-ops on SQLite — dev-sandbox only, since
+  SQLite has no row locking — and applies the real lock on Postgres/MySQL in
+  production), seat_ids sorted before locking to fix lock order and avoid deadlocks
+  on multi-seat holds. Functions: `hold_seats()`, `release_hold()` (voluntary early
+  release), `release_expired_holds()` (the scheduler target — `app/scheduler.py`'s
+  lazy import now resolves), `checkout()` (consumes a hold_key into a confirmed
+  `Booking`; idempotent — replaying the same hold_key returns the existing booking via
+  the new `Booking.hold_key` column instead of erroring or double-booking), and
+  `cancel_booking()` (frees seats back to available; lazily calls
+  `waitlist_service.offer_next_in_line()` per freed category — that module landed in
+  step 5, below, so this now actually fires instead of hitting the `ImportError` no-op).
+  Refactored during step 5 to split out `checkout_uncommitted()` (validates + writes,
+  no commit) from `checkout()` (adds the commit/rollback) — `waitlist_service.claim_offer()`
+  needed to extend the same open transaction with its own Waitlist-row update so the
+  two land atomically (see step 5's race notes below for why).
+- `app/routes/bookings.py` — customer-facing routes (`role_required(ROLE_CUSTOMER)`) at
+  `/api`: `POST /events/<id>/hold`, `DELETE /holds/<hold_key>`, `POST /checkout`.
+  `cancel_booking()` has no route yet — that wiring, alongside booking history, is step 7
+  per this plan; the service function itself is done now.
+  — **tested and passing**, 39/39 smoke-test checks (hold contention, checkout,
+  idempotent replay, wrong-owner 403s, TTL expiry via `release_expired_holds()`,
+  expired-but-unswept 410, `cancel_booking()` freeing a seat for someone else to grab).
+  Note: SQLite can't demonstrate the actual `FOR UPDATE` locking guarantee (no
+  concurrent-request race was run) — only Postgres does, so that guarantee is
+  unverified until this runs against real Postgres. The business-rule behavior
+  (second party blocked while a hold is live, freed/expired seats become grabbable,
+  idempotent checkout) is what's covered here.
+- **Waitlist trigger scope, as built:** `cancel_booking()` is the only thing that
+  offers freed seats to the waitlist, matching the brief's literal wording ("booking
+  cancelled → seat offered to next waitlisted customer"). `release_expired_holds()`
+  does **not** trigger waitlist offers — an expired hold returning to available is
+  normal churn, not a sold-out category opening up. Worth flagging if that's not the
+  intended interpretation.
+- `app/services/waitlist_service.py` — FIFO queue per (event, category). An "offer"
+  reuses the seat_status hold mechanism directly: the seat flips to `held` with the
+  Waitlist entry's `offer_token` as its `hold_key`, so `hold_seats()`/`checkout()`
+  already treat it as correctly unavailable to everyone else, and claiming an offer
+  is literally `checkout_uncommitted()` with `offer_token` as the `hold_key`.
+  `join_waitlist()` only allows joining when the category currently has zero
+  available seats (else 409 — book directly instead). `offer_next_in_line()` loops
+  while a waiting entry and an available seat both exist, so one cancellation that
+  frees several seats in a category can produce several offers in one call.
+  `expire_stale_offers()` is the scheduler target: frees a lapsed offer's seat, marks
+  the entry `expired`, and cascades to the next waiting entry in the *same* sweep
+  (not the next scheduler cycle). Every Waitlist row this module writes is locked
+  (`SELECT ... FOR UPDATE`, same `lock_for_update()` helper as seat_service.py,
+  factored out to `app/utils/locking.py` in this step) with a re-check-after-lock
+  pattern, so a claim landing at the same instant as the expiry sweep can't leave an
+  entry in the wrong terminal status. One accepted gap, documented in the module
+  docstring: picking "the next waiting entry" isn't perfectly linearizable if two
+  cancellations for the *same* category race at the exact same instant — can't cause
+  a double-booked seat (seat_status locking still guarantees that), worst case is a
+  seat sitting offered a beat longer than ideal before its own TTL sweep frees it.
+  Consistent with the brief's other single-instance-scale trade-offs.
+  `_send_offer_email()` sends the time-limited claim link now (via the existing
+  `app/utils/email.py` stub — fails soft without SMTP configured) since it's core to
+  the waitlist flow itself, not the booking-confirmation QR email that's step 6.
+- `app/routes/waitlist.py` — customer-facing (`role_required(ROLE_CUSTOMER)`):
+  `POST /events/<id>/waitlist` (join), `POST /waitlist/claim` (claim an offer by
+  token). No "my waitlist entries" listing route yet — not asked for by this step;
+  a natural future addition alongside step 7's booking history.
+  — **tested and passing**, 52/52 smoke-test checks: join gated on sold-out (409
+  while seats remain, 400/404 validation, 409 on duplicate join), FIFO offer
+  ordering across two separate cancellations, claim success + idempotent replay +
+  wrong-owner 403 + unknown-token 404, and the expire→cascade behavior verified
+  end-to-end (an entry's offer is forced into the past, `expire_stale_offers()` is
+  called directly, and the *next* waiting entry is confirmed offered the same freed
+  seat within that one call).
+  **A real bug surfaced and got fixed here**: `claim_offer()` originally rejected a
+  replayed claim with 410 because it checked `entry.status == WL_OFFERED` *before*
+  reaching the idempotent `checkout_uncommitted()` path — but a successful claim
+  flips the entry to `converted`, so the replay never got there. Fixed by also
+  accepting `WL_CONVERTED` at that gate (a replay looks exactly like that), letting
+  `checkout_uncommitted()`'s existing-hold_key lookup do the idempotency. Caught by
+  the smoke test's explicit replay case, not by inspection.
+- `app/services/ticket_service.py` — `generate_qr_png(data)` (QR-encodes a string,
+  e.g. `booking.ref`, to PNG bytes via `qrcode`) and `send_booking_confirmation_email(booking)`
+  (builds the confirmation HTML — event/venue/when/seats/total/ref — and sends it via
+  `app/utils/email.py`'s existing stub with the QR PNG as a file attachment named
+  `ticket-<ref>.png`). QR encodes just the booking ref as plain text, per the brief's
+  literal wording ("QR encodes booking reference"), not a verification URL.
+  Best-effort/fails soft: any exception here is caught and logged, never propagated —
+  a ticket/email bug must not fail the booking itself.
+  Wired into both places a booking is actually created — `seat_service.checkout()`
+  and `waitlist_service.claim_offer()` — each gated on `created=True` so an
+  idempotent replay of either never sends a duplicate ticket email. This is a
+  separate email from `waitlist_service._send_offer_email()` (the "a seat opened up,
+  claim it" notification sent when an offer goes out, not when it's claimed) — both
+  now coexist, verified distinct by content/attachment-presence in the smoke test.
+  — **tested and passing**, 37/37 smoke-test checks, using a monkeypatched
+  `send_email` to capture calls instead of actually sending (no SMTP server in this
+  sandbox): exactly one confirmation email per fresh booking (direct checkout and
+  waitlist claim both verified), none on replay of either, correct PNG magic bytes
+  and filename on the attachment, and the fails-soft behavior (email raising an
+  exception returns `False`, doesn't propagate). **Caveat**: the QR's actual decoded
+  *content* wasn't verified end-to-end — that needs `pyzbar`, which needs the system
+  `zbar` library, not present in this sandbox and not worth installing system
+  packages just to strengthen one assertion. What's verified is that a well-formed
+  PNG is produced and attached; correctness of `qrcode`'s encoding itself is trusted
+  (it's a standard, widely-used library), not independently confirmed here.
+- `app/routes/bookings.py` extended with the step-7 booking history + cancel routes
+  (`role_required(ROLE_CUSTOMER)`, scoped to the owning customer — cross-customer
+  access → 404, same pattern as everywhere else): `GET /bookings` (history, both
+  confirmed and cancelled, newest first), `GET /bookings/<id>` (detail), `DELETE
+  /bookings/<id>` (cancel — thin wrapper around the `cancel_booking()` service
+  function already built in step 4; idempotent — cancelling an already-cancelled
+  booking is a 200 no-op, not an error, since `cancel_booking()` was already built
+  that way). No cancellation-deadline restriction (e.g. "can't cancel within N hours
+  of the show") — not asked for by the brief, so not added.
+  — **tested and passing**, 32/32 smoke-test checks: gating, ownership isolation on
+  both list and detail, idempotent re-cancel, and — the one that actually mattered
+  to verify here since the service logic was already covered in step 5 — that
+  cancelling through this **HTTP route** (not a direct service call, unlike the step-5
+  test) still correctly cascades a waitlist offer end-to-end.
+
+All routes files were smoke-tested with Flask's test client against an in-memory
+SQLite DB (with `PRAGMA foreign_keys=ON` to mirror Postgres's FK-restrict behavior) —
+Postgres wasn't available in the dev sandbox. Production config/DB is untouched.
+Running total: 250/250 backend smoke-test checks passing across all seven suites.
+
+- **`frontend/`** — plain HTML/CSS/JS (no build step), per the architecture decision.
+  Served directly by the Flask app itself: `app/__init__.py` now constructs `Flask(...,
+  static_folder=FRONTEND_DIR, static_url_path="")` and adds `GET /` → `index.html`;
+  every other page/asset (`/login.html`, `/css/style.css`, `/js/api.js`, ...) is
+  auto-served by Flask's static handling since `static_url_path` is `""`. The
+  `/api/*` blueprint routes still take precedence (Werkzeug routes by specificity,
+  not registration order) — confirmed by the full backend regression suite passing
+  unchanged after this change.
+  - `frontend/js/api.js` — shared `fetch()` wrapper (`api()`, adds the JWT bearer
+    header, throws with `.status`/`.data` on non-2xx), token/user storage
+    (`localStorage`), `requireAuth(role)` gate, `showAlert()`/`clearAlert()`,
+    `landingPageFor(role)` (shared by login/register so both send a freshly
+    authenticated user to the right dashboard), date/money formatters. `API_BASE`
+    is `''` (same-origin) by default — the one line to edit if the frontend is ever
+    hosted separately from the API.
+  - `frontend/js/nav.js` — renders the top nav from `localStorage` auth state on
+    every page.
+  - **Pages**: `index.html` (public browse/filter — type, title search, date,
+    pagination, `price_from` per event), `login.html`/`register.html`, `event.html`
+    (event detail + live seat map + hold/checkout flow), `bookings.html` (customer
+    history + cancel), `claim-offer.html` (the waitlist offer link target —
+    `?token=...` → claim), `organiser.html` (create event with per-category pricing,
+    manage existing events: summary/revenue, pricing, bookings, delete), `admin.html`
+    (venue CRUD, categories, bulk seat creation, read-only seat-map preview).
+  - **`event.html`'s hold/checkout flow** (the most involved page): seat map polls
+    `GET .../seatmap` every 5s; a click toggles local `selectedSeatIds` (no network
+    call); "Hold Selected Seats" calls the hold endpoint and switches to
+    `activeHold` state, which the renderer force-overrides to "selected" (blue)
+    regardless of raw poll status — necessary because the seatmap API deliberately
+    never reveals *who* holds a seat (no PII, see browse.py), so without this
+    override a customer's own hold would repaint as generic "held by someone" on
+    the very next poll tick. A `setInterval` countdown reads `hold_expires_at`
+    client-side (no server round-trip needed for the ticking display) and turns red
+    under 60s remaining; hitting 0 clears the hold state and refreshes. Checkout,
+    release, and expiry all trigger a full `refreshSeatmap()` (not just a local
+    re-render) so the Availability panel's counts stay server-truthful.
+  - **`organiser.html`'s datetime-local → UTC conversion**: the browser's
+    `datetime-local` input has no timezone info and is otherwise silently
+    mis-stored as UTC; `new Date(value).toISOString()` converts it correctly before
+    sending, matching how the rest of the frontend already displays stored
+    timestamps back in the viewer's local time (`formatDateTime()` in `api.js`).
+
+  **Verification**: no test-runner exists for a plain-JS frontend, so this was
+  verified by actually running it — `python run.py` against a throwaway file-based
+  SQLite DB (`DATABASE_URL=sqlite:////tmp/....db`, Postgres unavailable in this
+  sandbox) with Flask serving the frontend itself, driven end-to-end by a
+  Playwright script (headless Chromium, no `chromium-cli`/project run-skill
+  available here, so this was a one-off driver rather than a reusable skill) through
+  the full path: register organiser + customer → seed an admin row directly (no
+  self-registration by design) → admin creates venue/category/bulk seats → organiser
+  creates a priced event → event appears on the public browse page → customer
+  selects a seat, holds it (countdown visible), checks out → booking confirmation
+  shown → booking appears in history → cancel it. All steps passed, zero browser
+  console errors, screenshots captured at each step.
+  **Two real bugs found by this run and fixed** (not caught by inspection or by the
+  backend's own test suite, since neither is backend behavior):
+  1. `login.html` had no role-based redirect (only `next` or `/index.html`), unlike
+     `register.html` (which sent organisers to their dashboard) — an inconsistency
+     a real user would hit on every login. Fixed by factoring `landingPageFor(role)`
+     into `api.js` and using it from both pages.
+  2. `bookings.html`'s cancel flow called `showAlert('Booking cancelled...')` then
+     `await loadBookings()` — but `loadBookings()` calls `clearAlert()` at its own
+     start (needed for its role as the plain page-load path), which wiped the
+     success message before it was ever visible. Fixed by reordering: reload first,
+     show the success message after.
+  A third issue was a gap rather than a bug: right after a successful hold,
+  `event.html` only did a local re-render, so the Availability panel's counts
+  (e.g. "10/10 available") stayed stale until the next 5s poll tick even though the
+  seat was already held. Fixed by awaiting a full `refreshSeatmap()` on hold
+  success, same as checkout/release already did.
+
+## What's Next (in order)
+1. ~~**Admin routes**~~ — done, see above
+2. ~~**Organiser routes**~~ — done, see above
+3. ~~**Customer browse/seat-map routes**~~ — done, see above
+4. ~~**`app/services/seat_service.py`**~~ — done, see above
+5. ~~**`app/services/waitlist_service.py`**~~ — done, see above
+6. ~~**QR + email**~~ — done, see above
+7. ~~**Customer booking history + cancel** endpoint~~ — done, see above
+8. ~~**Frontend**~~ — done, see above
+9. **README** — setup guide, `.env.example` (already exists), API docs, DB schema, hold/
+   waitlist logic explanation
+10. **Deploy** — Render/Railway (backend + Postgres), verify hosted URL works end-to-end
+
+## Reference Material Used (concepts only, not architecture)
+- Medium: "Online Movie Ticket Booking Platform - System Design (e.g. BookMyShow)" by
+  Prithwish Samanta — tentative/confirm booking, Redis TTL blocking, microservices HLD
+- GeeksforGeeks: "Design BookMyShow - A System Design Interview Question" — FIFO ticket
+  serving, `BlockUserSelectedSeats`/`BookUserSelectedSeat` API naming, seat lock timeout flow
+
+Both are large-scale distributed designs; this project intentionally uses a subset of their
+concepts (two-phase booking, TTL locking, FIFO fairness) without the distributed
+infrastructure (Kafka, Elasticsearch, Redis, microservices, CDN, Hadoop/BI).

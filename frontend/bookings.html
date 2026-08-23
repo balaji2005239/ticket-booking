@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My Bookings — Ticket Booking</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="nav"></div>
+  <main>
+    <h1>My Bookings</h1>
+    <div id="alertBox"></div>
+    <div id="bookingList"></div>
+    <p id="emptyMsg" class="muted hidden">No bookings yet — go <a href="/index.html">browse events</a>.</p>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/nav.js"></script>
+  <script>
+    if (!requireAuth('customer')) {
+      // requireAuth already redirected or showed an error
+    } else {
+      loadBookings();
+    }
+
+    async function loadBookings() {
+      clearAlert();
+      const list = document.getElementById('bookingList');
+      const emptyMsg = document.getElementById('emptyMsg');
+      list.innerHTML = '<p class="muted">Loading&hellip;</p>';
+      emptyMsg.classList.add('hidden');
+
+      try {
+        const data = await api('/api/bookings');
+        list.innerHTML = '';
+        if (data.bookings.length === 0) {
+          emptyMsg.classList.remove('hidden');
+          return;
+        }
+        for (const b of data.bookings) {
+          list.appendChild(renderBookingCard(b));
+        }
+      } catch (err) {
+        list.innerHTML = '';
+        showAlert(err.message, 'error');
+      }
+    }
+
+    function renderBookingCard(b) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const statusBadge = b.status === 'confirmed'
+        ? '<span class="badge badge-ok">Confirmed</span>'
+        : '<span class="badge badge-muted">Cancelled</span>';
+
+      card.innerHTML = `
+        <div class="event-card">
+          <div>
+            <div>${statusBadge} <strong>${escapeHtml(b.event_title || '')}</strong></div>
+            <div class="meta">${formatDateTime(b.starts_at)} &middot; seats ${b.seats.join(', ') || '—'} &middot; ref <code>${escapeHtml(b.ref)}</code></div>
+            <div class="meta">Booked ${formatDateTime(b.created_at)}</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="price">${formatMoney(b.total)}</div>
+          </div>
+        </div>
+      `;
+
+      if (b.status === 'confirmed') {
+        const btn = document.createElement('button');
+        btn.className = 'danger small spacer-top';
+        btn.textContent = 'Cancel booking';
+        btn.addEventListener('click', () => cancelBooking(b.id, btn));
+        card.appendChild(btn);
+      }
+      return card;
+    }
+
+    async function cancelBooking(bookingId, btn) {
+      if (!confirm('Cancel this booking? This cannot be undone.')) return;
+      clearAlert();
+      btn.disabled = true;
+      try {
+        await api(`/api/bookings/${bookingId}`, { method: 'DELETE' });
+        // loadBookings() clears the alert box itself (it's also called on plain
+        // page load, where there's nothing to preserve) — so show the success
+        // message AFTER reloading, not before, or it gets wiped before it's seen.
+        await loadBookings();
+        showAlert('Booking cancelled. If someone is waiting for this seat, they’ll be notified automatically.', 'ok');
+      } catch (err) {
+        showAlert(err.message, 'error');
+        btn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login — Ticket Booking</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="nav"></div>
+  <main class="narrow">
+    <h1>Log in</h1>
+    <div id="alertBox"></div>
+    <div class="card">
+      <form id="loginForm">
+        <label for="email">Email</label>
+        <input type="email" id="email" required autocomplete="email">
+
+        <label for="password">Password</label>
+        <input type="password" id="password" required autocomplete="current-password">
+
+        <button type="submit" class="spacer-top" style="width: 100%;">Log in</button>
+      </form>
+    </div>
+    <p class="muted">No account yet? <a href="/register.html">Register here</a>.</p>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/nav.js"></script>
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearAlert();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      try {
+        const data = await api('/api/auth/login', { method: 'POST', auth: false, body: { email, password } });
+        setToken(data.token);
+        setUser(data.user);
+        const params = new URLSearchParams(location.search);
+        location.href = params.get('next') || landingPageFor(data.user.role);
+      } catch (err) {
+        showAlert(err.message, 'error');
+      }
+    });
+  </script>
+</body>
+</html>
