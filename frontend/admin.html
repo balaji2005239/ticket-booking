@@ -34,8 +34,11 @@
     <p id="emptyMsg" class="muted hidden">No venues yet — create one above.</p>
   </main>
 
+  <footer id="footer" class="site-footer"></footer>
+
   <script src="/js/api.js"></script>
   <script src="/js/nav.js"></script>
+  <script src="/js/footer.js"></script>
   <script>
     if (!requireAuth('admin')) {
       document.querySelectorAll('main > *:not(#alertBox)').forEach((el) => el.remove());

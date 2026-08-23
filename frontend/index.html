@@ -9,8 +9,12 @@
 <body>
   <div id="nav"></div>
   <main>
-    <h1>Browse Events</h1>
-    <p class="subtitle">Movies and concerts — pick one to see the seat map.</p>
+    <div class="hero">
+      <h1>Now booking</h1>
+      <p class="subtitle">Movies and concerts — pick one to see the live seat map.</p>
+    </div>
+
+    <div id="alertBox"></div>
 
     <div class="card">
       <div class="form-row">
@@ -36,13 +40,16 @@
       </div>
     </div>
 
-    <div id="alertBox"></div>
+    <h2>Now Showing</h2>
     <div id="eventList"></div>
     <p id="emptyMsg" class="muted hidden">No events match those filters.</p>
   </main>
 
+  <footer id="footer" class="site-footer"></footer>
+
   <script src="/js/api.js"></script>
   <script src="/js/nav.js"></script>
+  <script src="/js/footer.js"></script>
   <script>
     async function loadEvents() {
       clearAlert();

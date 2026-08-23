@@ -28,10 +28,10 @@
       <p class="muted" id="seatHint">Select your seats below.</p>
       <div id="seatmap" class="seatmap"></div>
       <div class="legend">
-        <span><span class="swatch" style="background:#eef2ff;border:1px solid #c7d2fe;"></span>Available</span>
-        <span><span class="swatch" style="background:#2563eb;"></span>Selected</span>
-        <span><span class="swatch" style="background:#fef3c7;border:1px solid #d97706;"></span>Held by someone</span>
-        <span><span class="swatch" style="background:#fee2e2;border:1px solid #dc2626;"></span>Booked</span>
+        <span><span class="swatch" style="background:rgba(242,169,59,0.15);border:1px solid rgba(242,169,59,0.5);"></span>Available</span>
+        <span><span class="swatch" style="background:linear-gradient(135deg, #ffcf7a, #f2a93b);"></span>Selected</span>
+        <span><span class="swatch" style="background:rgba(229,72,77,0.15);border:1px solid rgba(229,72,77,0.5);"></span>Held by someone</span>
+        <span><span class="swatch" style="background:rgba(80,70,90,0.5);border:1px solid #3a2f42;"></span>Booked</span>
       </div>
 
       <div id="selectionBar" class="spacer-top hidden">
@@ -59,8 +59,11 @@
     </div>
   </main>
 
+  <footer id="footer" class="site-footer"></footer>
+
   <script src="/js/api.js"></script>
   <script src="/js/nav.js"></script>
+  <script src="/js/footer.js"></script>
   <script>
     const eventId = new URLSearchParams(location.search).get('id');
     const user = getUser();
