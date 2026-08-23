@@ -93,7 +93,6 @@ config.py                # env-driven Config class
 run.py                    # WSGI entry point (`app = create_app()`)
 requirements.txt
 render.yaml               # Render Blueprint (web service + Postgres)
-PROJECT_BRIEF.md          # full build log / design-decision history (long, detailed)
 ```
 
 ---
@@ -193,7 +192,6 @@ All variables, from `.env.example`:
 > network level — confirmed by testing valid SMTP credentials that authenticated
 > successfully from an unrestricted machine, then timed out on every port (587/465/2525)
 > when the identical code ran on Render. An HTTP POST on port 443 has no such problem.
-> See `app/utils/email.py`'s docstring and `PROJECT_BRIEF.md` for the full trail.
 
 ---
 
@@ -574,17 +572,12 @@ across multiple sweep cycles in a row (see
 [Waitlist & time-limited offer logic](#waitlist--time-limited-offer-logic)), and real
 end-to-end email delivery.
 
-See `PROJECT_BRIEF.md` for the full build-and-debugging history, including real bugs
-caught by this testing (not by inspection): an idempotent-replay gate ordering bug in
-`claim_offer()`, the `app.logger` level issue mentioned above, and a misconfigured
-`EMAIL_FROM_ADDRESS` (unverified sender) that silently killed every app-sent email
-until Brevo's own delivery logs — not this app's logs — revealed the reason.
+
 
 ---
 
 ## Architecture & trade-offs
 
-Full reasoning lives in `PROJECT_BRIEF.md`; the short version:
 
 - **PostgreSQL only, no Redis** — seat holds and waitlist offers are rows with
   `*_expires_at` timestamps, swept by APScheduler every ~30s, rather than a separate
