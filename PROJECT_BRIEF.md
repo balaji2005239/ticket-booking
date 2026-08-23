@@ -347,7 +347,44 @@ Running total: 250/250 backend smoke-test checks passing across all seven suites
 8. ~~**Frontend**~~ — done, see above
 9. **README** — setup guide, `.env.example` (already exists), API docs, DB schema, hold/
    waitlist logic explanation
-10. **Deploy** — Render/Railway (backend + Postgres), verify hosted URL works end-to-end
+10. ~~**Deploy**~~ — done, see below
+
+## Deployed (step 10)
+- **Live URL**: https://ticket-booking-api-1sps.onrender.com — Render Blueprint deploy
+  (`render.yaml` in repo root), web service (`gunicorn run:app --workers 1` — single
+  worker deliberately, see the comment in `render.yaml`: avoids multiple independent
+  APScheduler instances, one per gunicorn worker process, all sweeping the same rows)
+  + a managed Postgres instance, wired together automatically by the Blueprint.
+  Repo: https://github.com/balaji2005239/ticket-booking (public, `main`).
+- **`.python-version` pinned to `3.12`** — `psycopg2-binary==2.9.9` only ships wheels
+  through cp312; Render's default for new services is 3.14, which would hit the exact
+  build failure this pin avoids (confirmed locally: no wheel, no local `pg_config` to
+  build from source either).
+- **Verified against the live deployment, not just locally**: `/api/health` (200),
+  frontend root + static assets (200), `GET /api/events` and `POST /api/auth/register`
+  (both exercise real Postgres reads/writes, not SQLite) — all passing.
+- **The concurrency guarantee — flagged as unverified throughout steps 4-8 because every
+  prior test ran against SQLite (no real row locking) — is now confirmed against real
+  Postgres.** Seeded a throwaway admin/organiser/2 customers/venue/seat/event directly
+  via the app's own models (admins can't self-register, so this needed direct DB access
+  — external connection string, not exposed to the deployed app), then fired two
+  genuinely simultaneous `POST /hold` requests (Python `threading.Barrier` releasing
+  both at once, over real HTTPS to the live URL, not sequential and not a direct DB
+  test) for the same seat from two different customers. Result: exactly one `201`, one
+  `409`, and the seat_status row consistent with the winner — the `SELECT ... FOR
+  UPDATE` locking correctly serializes concurrent access under real Postgres. All test
+  data cleaned up afterward (verified via direct query: 0 rows in every table except
+  the 1 pre-existing real user the operator had already created).
+- **Known limits of the free tier** (not code issues — Render's terms): free Postgres
+  expires 30 days after creation (14-day grace to upgrade before deletion); free web
+  service sleeps after 15 min idle (~1 min cold start) and gets 750 instance-hours/month
+  workspace-wide. Fine for a graded demo; would need a paid Postgres plan for anything
+  longer-lived.
+- **SMTP not yet configured** — `SMTP_HOST` etc. are placeholders in `render.yaml`
+  (`sync: false`, filled in via Render's dashboard, not committed). Booking/waitlist
+  flows work either way (`send_email()` fails soft), but real email delivery from the
+  live deployment hasn't been exercised — only the code path, locally, with a
+  monkeypatched capture (see step 6's notes above).
 
 ## Reference Material Used (concepts only, not architecture)
 - Medium: "Online Movie Ticket Booking Platform - System Design (e.g. BookMyShow)" by
