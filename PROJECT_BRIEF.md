@@ -417,13 +417,87 @@ Running total: 250/250 backend smoke-test checks passing across all seven suites
      `EMAIL_FROM_ADDRESS`/`EMAIL_FROM_NAME` replace `SMTP_FROM_EMAIL`/`SMTP_FROM_NAME`.
      `requests` added to `requirements.txt`. This is a real, deliberate reversal of the
      original "smtplib, no extra email SDK" architecture decision — recorded there too.
-  5. Next: redeploy with the new code + `BREVO_API_KEY` on Render, then trigger one more
-     real booking on the live app to confirm delivery end-to-end there too (the `curl`
-     test in step 4 confirmed Brevo's API + the request shape work; it did not yet
-     confirm the deployed app itself, post-redeploy, does).
+  5. Redeployed with the new code + `BREVO_API_KEY` on Render, triggered one more real
+     booking (ref `340A0FF86B6B`) against the live app to confirm the deployed app
+     itself — not just the `curl` test from step 4 — sends real mail post-redeploy.
   **Full regression (250/250) reran clean after the rewrite** — the smoke tests
   monkeypatch `send_email()` itself, so they're implementation-agnostic and didn't need
-  changes. **Live-deployment email delivery: pending confirmation as of this writing.**
+  changes. **Caveat**: the `curl` test in step 4 was explicitly confirmed received; the
+  step-5 live-app-triggered booking email was not explicitly re-confirmed in the
+  inbox afterward (the conversation moved on to the OTP feature below) — same code
+  path, same API call, so very likely fine, but worth a quick manual check rather than
+  taking that as fully closed.
+
+## Post-deployment addition: email OTP verification (not in the original brief)
+A feature request that came after the app was fully built, tested, and deployed —
+not part of the original assignment scope above, added on top of it.
+
+**Design decisions confirmed with the user before building**: (1) an account is fully
+blocked — no token issued, login refused — until the OTP is verified, not a soft
+background flag; (2) applies to both self-registered roles, customer and organiser.
+Admins are exempt: they're seeded directly by a trusted operator, never through
+`/register`, so they never go through this flow at all — a freshly-seeded admin has
+`email_verified=False` by default and that's fine, because the login check itself
+skips the verification requirement entirely for `role == admin`.
+
+**Data model**: three new columns on `User` — `email_verified` (bool, default False),
+`otp_code` (6-digit string), `otp_expires_at` (datetime). `otp_code`/`otp_expires_at`
+follow the same pattern as `SeatStatus.hold_key`/`hold_expires_at`: populated only
+while a verification is actually pending, cleared on success. `OTP_TTL_SECONDS` config
+(default 600s, same as the other TTLs) — code via `app/utils/otp.py`
+(`secrets.randbelow`, not `random` — this guards real account access).
+
+**Routes** (`app/routes/auth.py`):
+- `POST /register` — now creates an unverified user and sends the OTP; returns
+  `{"message": ..., "email": ...}`, **no token**. Registering again for an email that
+  exists but isn't verified yet updates the name/password/role and sends a fresh code
+  instead of hard-blocking with 409 (safe — the code still only reaches whoever
+  controls the inbox); registering an already-verified email still 409s as before.
+- `POST /verify-email` — `{email, otp}` → `404` unknown email, `400` wrong code, `410`
+  expired code (mirrors the `410` used elsewhere for expired holds/offers), `200` +
+  token on success. Idempotent: replaying against an already-verified account just
+  issues a fresh token rather than erroring — same pattern as `checkout()`'s replay
+  handling.
+- `POST /resend-otp` — `{email}` → `404` unknown, `409` already verified, else a fresh
+  code is generated and sent. No rate limiting — consistent with this project's other
+  "not over-engineered for scale/abuse" scope decisions.
+- `POST /login` — unchanged for admins; for customer/organiser, checks
+  `user.check_password()` first (401 on failure) *then* `email_verified` (403
+  `email_not_verified` if not) — deliberately in that order, so an unverified-account
+  probe can't be distinguished from a wrong-password one without knowing the password.
+
+**Frontend**: `register.html` no longer auto-logs in — redirects to the new
+`verify-email.html?email=...` page (OTP input + a resend button). `login.html`
+special-cases the `email_not_verified` error with a link straight to the verify page,
+pre-filled. Both `register.html` and `login.html` share a `landingPageFor(role)`
+helper in `api.js` for where to send a freshly-authenticated user.
+
+**Testing**: existing local test suites all register a user and immediately use the
+returned token — that pattern broke across all 7 files (register no longer returns
+one). Fixed by adding a `register_and_verify()` helper to each (register via the real
+endpoint, read the OTP straight from the DB — no real email in tests — then call
+`/verify-email` for the token), not a bypass. **New dedicated suite, 34/34**: no-token
+registration, blocked pre-verification login, verify validation (400/404/410),
+idempotent replay, resend (fresh code supersedes the stale one), expiry, re-registration
+of an unverified account (fresh code, updated details, doesn't 409) vs. an already-
+verified one (still 409s), the admin exemption specifically (freshly-seeded admin has
+`email_verified=False` and can still log in), and organiser gated the same as customer
+(not customer-only). **Full regression on the other 7 suites: 250/250, no
+regressions** — confirms the `register_and_verify()` migration didn't change behavior
+elsewhere, just how tests authenticate.
+
+**Deployment consequence worth flagging explicitly**: this project's "no migrations,
+`db.create_all()` only" decision (see Architecture Decisions above) means the three new
+`User` columns do **not** get added to the live Postgres table automatically —
+`create_all()` only creates tables that don't exist yet, it doesn't alter existing
+ones. Shipping this required a manual one-time `ALTER TABLE users ADD COLUMN ...`
+against the live DB, done directly (same DB access used throughout the deployment
+verification work), **plus backfilling `email_verified = TRUE` for every already-
+existing user** — otherwise every account that could log in before this shipped
+(including the operator's own admin and customer accounts) would have been locked out
+by the new check the moment it deployed. This is the first schema change made against
+the live database since the initial deploy; the next one will need the same manual
+step, or it's worth reconsidering the no-migrations decision at that point.
 
 ## Reference Material Used (concepts only, not architecture)
 - Medium: "Online Movie Ticket Booking Platform - System Design (e.g. BookMyShow)" by

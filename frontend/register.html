@@ -46,10 +46,8 @@
       const password = document.getElementById('password').value;
       const role = document.getElementById('role').value;
       try {
-        const data = await api('/api/auth/register', { method: 'POST', auth: false, body: { name, email, password, role } });
-        setToken(data.token);
-        setUser(data.user);
-        location.href = landingPageFor(data.user.role);
+        await api('/api/auth/register', { method: 'POST', auth: false, body: { name, email, password, role } });
+        location.href = `/verify-email.html?email=${encodeURIComponent(email)}`;
       } catch (err) {
         showAlert(err.message, 'error');
       }

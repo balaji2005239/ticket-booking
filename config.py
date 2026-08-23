@@ -25,6 +25,7 @@ class Config:
     HOLD_TTL_SECONDS = int(os.getenv("HOLD_TTL_SECONDS", 600))
     OFFER_TTL_SECONDS = int(os.getenv("OFFER_TTL_SECONDS", 600))
     SCHEDULER_INTERVAL_SECONDS = int(os.getenv("SCHEDULER_INTERVAL_SECONDS", 30))
+    OTP_TTL_SECONDS = int(os.getenv("OTP_TTL_SECONDS", 600))
 
     # Email via Brevo's HTTP API (see app/utils/email.py's docstring for why
     # this isn't raw SMTP — Render blocks outbound SMTP traffic entirely).

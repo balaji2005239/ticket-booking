@@ -40,7 +40,13 @@
         const params = new URLSearchParams(location.search);
         location.href = params.get('next') || landingPageFor(data.user.role);
       } catch (err) {
-        showAlert(err.message, 'error');
+        if (err.data && err.data.error === 'email_not_verified') {
+          const box = document.getElementById('alertBox');
+          box.innerHTML = `<div class="alert alert-error">${escapeHtml(err.message)} — `
+            + `<a href="/verify-email.html?email=${encodeURIComponent(email)}">verify it now</a>.</div>`;
+        } else {
+          showAlert(err.message, 'error');
+        }
       }
     });
   </script>

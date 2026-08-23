@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Verify Your Email — Ticket Booking</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="nav"></div>
+  <main class="narrow">
+    <h1>Verify your email</h1>
+    <p class="subtitle" id="subtitle">Enter the 6-digit code we emailed you.</p>
+    <div id="alertBox"></div>
+
+    <div class="card">
+      <form id="verifyForm">
+        <label for="email">Email</label>
+        <input type="email" id="email" required autocomplete="email">
+
+        <label for="otp">Verification code</label>
+        <input type="text" id="otp" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+               autocomplete="one-time-code" placeholder="123456">
+
+        <button type="submit" class="spacer-top" style="width: 100%;">Verify</button>
+      </form>
+      <button type="button" id="resendBtn" class="secondary spacer-top" style="width: 100%;">
+        Resend code
+      </button>
+    </div>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/nav.js"></script>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const prefillEmail = params.get('email') || '';
+    document.getElementById('email').value = prefillEmail;
+    if (prefillEmail) {
+      document.getElementById('subtitle').textContent = `Enter the 6-digit code we emailed to ${prefillEmail}.`;
+    }
+
+    document.getElementById('verifyForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearAlert();
+      const email = document.getElementById('email').value.trim();
+      const otp = document.getElementById('otp').value.trim();
+      try {
+        const data = await api('/api/auth/verify-email', { method: 'POST', auth: false, body: { email, otp } });
+        setToken(data.token);
+        setUser(data.user);
+        location.href = landingPageFor(data.user.role);
+      } catch (err) {
+        if (err.status === 410) {
+          showAlert(`${err.message} — use "Resend code" below.`, 'error');
+        } else {
+          showAlert(err.message, 'error');
+        }
+      }
+    });
+
+    document.getElementById('resendBtn').addEventListener('click', async () => {
+      clearAlert();
+      const email = document.getElementById('email').value.trim();
+      if (!email) {
+        showAlert('Enter your email first.', 'error');
+        return;
+      }
+      try {
+        await api('/api/auth/resend-otp', { method: 'POST', auth: false, body: { email } });
+        showAlert('A new code is on its way — check your email.', 'ok');
+      } catch (err) {
+        showAlert(err.message, 'error');
+      }
+    });
+  </script>
+</body>
+</html>

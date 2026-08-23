@@ -35,6 +35,8 @@ services:
         value: "600"
       - key: SCHEDULER_INTERVAL_SECONDS
         value: "30"
+      - key: OTP_TTL_SECONDS
+        value: "600"
       # Frontend is served by this same Flask app (see app/__init__.py), so
       # this should just be the service's own public URL. Render assigns
       # that URL from the `name` above — if it differs (e.g. name taken),
